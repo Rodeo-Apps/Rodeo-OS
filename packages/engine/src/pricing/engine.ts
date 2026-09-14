@@ -47,27 +47,49 @@ export interface PlatformFeeConfig {
 }
 
 /**
- * The recommended default.
+ * The active model (Sept-2026 repricing): we take NOTHING on the money flow.
  *
- * 2.0% and nothing fixed, capped at $15. Subscribers pay zero.
+ * Rodeo OS is free to producers, and the platform adds ZERO markup to entries.
+ * A contestant pays the entry plus what the card actually costs, and not one
+ * cent more — for everyone, subscriber or not. That makes this the cheapest
+ * place in the country to enter a rodeo, which is a producer's argument to
+ * their own field, not just ours to them.
  *
- * The rate has to be set against what a contestant pays ALL-IN, not against a
- * competitor's headline number, because the two are not the same thing.
- * RodeoReady quotes 5.5% + $0.35 and pays card processing OUT of it, so their
- * all-in on a $100 entry is $5.85. Rodeo Producer quotes 1% and puts card fees
- * on top, so theirs is about $4.23.
+ * Revenue does not come from a cut of entries. It comes from ONE membership —
+ * Rodeo Apps Premium, $4.99/mo or $49.99/yr (see RODEOAPPS_SUBSCRIPTION) —
+ * which unlocks premium across all the athlete apps AND the OS. The strategy
+ * is to give the tooling away, capture the market, and adjust in ~3 years.
  *
- * A first draft of this file used 4.9% + $0.30 on the reasoning that it
- * "undercuts 5.5%". Modelled properly it comes to $8.55 all-in — half again
- * more expensive than the competitor it was supposed to beat. Comparing
- * headline rates across platforms that treat processing differently is how
- * that mistake gets made, and it is why compareAllIn() exists.
- *
- * At 2.0% the all-in is $5.26, under RodeoReady and near the price leader.
- * A subscriber pays $3.20 — card processing only, the cheapest entry in the
- * sport. That gap is the product.
+ * The percentage model that used to be the default (2% capped at $15) is
+ * retained below as PERCENTAGE_MODEL_FEES for competitor comparison and as a
+ * possible year-3 lever. It is NOT what the platform charges today.
  */
 export const DEFAULT_PLATFORM_FEES: PlatformFeeConfig = {
+  standard_percent: 0,
+  standard_fixed_cents: 0,
+  subscriber_percent: 0,
+  subscriber_fixed_cents: 0,
+  card_fees: 'contestant',
+  processor: STRIPE_STANDARD,
+};
+
+/**
+ * DEFERRED — the old percentage model, retained for comparison only.
+ *
+ * 2.0% and nothing fixed, capped at $15; subscribers zero. This was the
+ * recommended default before the Sept-2026 repricing. It is kept so
+ * compareModels() can show a producer what a percentage cut WOULD have taken,
+ * and as a possible future monetisation lever. The active platform does not
+ * charge it.
+ *
+ * (Modelling note preserved: the rate has to be judged on what a contestant
+ * pays ALL-IN, not a competitor's headline number. RodeoReady's 5.5% + $0.35
+ * INCLUDES card processing — $5.85 all-in on $100 — while Rodeo Producer's 1%
+ * puts card fees on top. At 2.0% our all-in was $5.26. compareAllIn() exists
+ * so headline rates are never compared across platforms that treat processing
+ * differently.)
+ */
+export const PERCENTAGE_MODEL_FEES: PlatformFeeConfig = {
   standard_percent: 0.02,
   standard_fixed_cents: 0,
   subscriber_percent: 0,
@@ -192,6 +214,14 @@ export interface SubscriptionPricing {
   annual_share: number;
 }
 
+/**
+ * The one and only membership.
+ *
+ * $4.99/month or $49.99/year. A single account-level entitlement that unlocks
+ * premium across ALL the athlete apps AND the OS — buy it once on any surface,
+ * it is honoured everywhere. Basic stays free on both sides forever. This is
+ * the platform's revenue; the OS and the money flow are free.
+ */
 export const RODEOAPPS_SUBSCRIPTION: SubscriptionPricing = {
   monthly_cents: 499,
   annual_cents: 4999,
@@ -341,18 +371,21 @@ export function compareAllIn(
 }
 
 // ---------------------------------------------------------------------------
-// Flat producer subscription — the recommended model
+// DEFERRED — flat producer ladder (year-3 lever, NOT the active model)
+//
+// As of the Sept-2026 repricing the OS is FREE to producers: no per-rodeo fee,
+// no seat fee, no ladder. This ladder is retained only as a possible future
+// monetisation lever and as the flat side of compareModels(). Nothing here is
+// charged today.
 // ---------------------------------------------------------------------------
 
 /**
- * A producer plan.
+ * A producer plan. DEFERRED — see the section note above.
  *
- * The alternative to taking a percentage of entries, and the one this platform
- * should sell. The reasoning is in docs/PRICING.md; the short version is that
- * a flat price is one sentence to sell, it captures cash rodeos that a
- * percentage model earns nothing from, and charging zero on the money flow
- * makes this the cheapest place in the country to enter a rodeo — which is a
- * producer's argument to their own field, not just ours to them.
+ * If the platform ever charges producers, this flat ladder is the shape it
+ * would take rather than a percentage of entries: a flat price is one sentence
+ * to sell and captures cash rodeos a percentage model earns nothing from. Kept
+ * for modelling; the active model is free.
  */
 export interface ProducerPlan {
   code: string;
@@ -503,7 +536,7 @@ export interface ModelComparison {
 export function compareModels(
   entriesPerYear: number,
   avgEntryCents: number,
-  percentageConfig: PlatformFeeConfig = DEFAULT_PLATFORM_FEES,
+  percentageConfig: PlatformFeeConfig = PERCENTAGE_MODEL_FEES,
 ): ModelComparison {
   const perEntry = calculatePlatformFee({
     entry_total_cents: avgEntryCents,
