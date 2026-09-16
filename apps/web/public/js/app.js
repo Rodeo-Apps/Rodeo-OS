@@ -7,8 +7,9 @@
  * open.
  */
 
-import { api, init, session, setSession, clearSession } from './api.js';
-import { crumbs, h, render, showPrint, toast } from './ui.js';
+import { api, init, session, setSession, clearSession, syncOffline } from './api.js';
+import { crumbs, h, render, showPrint, stopPoll, toast } from './ui.js';
+import { onQueueChange, queueSize } from './offline.js';
 
 const routes = [
   [/^\/?$/, () => import('./views/rodeo.js').then((m) => m.listView())],
@@ -31,6 +32,8 @@ const routes = [
     import('./views/contestant.js').then((m) => m.contestantView(id))],
   [/^\/rodeo\/([0-9a-f-]{36})\/scoring$/, (id) =>
     import('./views/scoring.js').then((m) => m.scoringView(id))],
+  [/^\/rodeo\/([0-9a-f-]{36})\/judge-cards$/, (id) =>
+    import('./views/judgesheet.js').then((m) => m.judgeSheetView(id))],
   [/^\/rodeo\/([0-9a-f-]{36})\/results$/, (id) =>
     import('./views/results.js').then((m) => m.resultsView(id))],
   [/^\/rodeo\/([0-9a-f-]{36})\/corrections$/, (id) =>
@@ -59,6 +62,14 @@ const routes = [
     import('./views/performance_mode.js').then((m) => m.performanceModeView(id))],
   [/^\/rodeo\/([0-9a-f-]{36})\/remittance$/, (id) =>
     import('./views/remittance.js').then((m) => m.remittanceView(id))],
+  [/^\/rodeo\/([0-9a-f-]{36})\/checkin$/, (id) =>
+    import('./views/checkin.js').then((m) => m.checkInView(id))],
+  [/^\/rodeo\/([0-9a-f-]{36})\/arena-check$/, (id) =>
+    import('./views/arena_check.js').then((m) => m.arenaCheckView(id))],
+  [/^\/rodeo\/([0-9a-f-]{36})\/ground-rules$/, (id) =>
+    import('./views/groundrules.js').then((m) => m.groundRulesView(id))],
+  [/^\/rodeo\/([0-9a-f-]{36})\/personnel$/, (id) =>
+    import('./views/personnel.js').then((m) => m.personnelView(id))],
   [/^\/year-end$/, () =>
     import('./views/yearend.js').then((m) => m.yearEndView())],
   [/^\/settings$/, () => settingsView()],
@@ -138,6 +149,10 @@ function showError(err) {
 async function route() {
   const path = location.hash.replace(/^#/, '') || '/';
 
+  // Any live refresh from the view we are leaving stops before the next one
+  // starts, so exactly one poll is ever in flight.
+  stopPoll();
+
   if (!session().configured && path !== '/settings') {
     location.hash = '#/settings';
     return;
@@ -161,9 +176,90 @@ async function route() {
 
 window.addEventListener('hashchange', route);
 
+/**
+ * Global keyboard shortcuts.
+ *
+ * The rapid rhythm — type a score, press Enter, drop to the next contestant —
+ * lives inside each entry view. These are the shortcuts that make sense
+ * anywhere, and every one of them stands down the moment a field has focus, so
+ * a secretary typing a horse's name never trips a shortcut. The one exception
+ * is Escape, whose whole job is to let go of a field and stop the rapid entry.
+ */
+const TYPING = new Set(['INPUT', 'SELECT', 'TEXTAREA']);
+window.addEventListener('keydown', (e) => {
+  const typing = TYPING.has(document.activeElement?.tagName);
+
+  if (e.key === 'Escape' && typing) {
+    document.activeElement.blur();
+    return;
+  }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+  // p — print the sheet, when the current view offers one.
+  if (e.key === 'p') {
+    const btn = document.getElementById('printBtn');
+    if (btn && !btn.hidden) { e.preventDefault(); btn.click(); }
+    return;
+  }
+  // ? — a reminder of what the keys do.
+  if (e.key === '?') {
+    e.preventDefault();
+    toast('Enter saves and moves down · Esc leaves a field · p prints');
+  }
+});
+
+/**
+ * Offline status and sync.
+ *
+ * The top bar carries one small pill that tells the truth about the connection:
+ * how many writes are waiting on this device, or that the app is offline and
+ * running on cached data. When the connection returns — the browser's `online`
+ * event, or simply coming back to the tab — the queue drains automatically and
+ * the current view is refreshed so the secretary sees the synced result.
+ */
+function paintSync(queued) {
+  const el = document.getElementById('syncLabel');
+  if (!el) return;
+  if (!navigator.onLine) {
+    el.hidden = false;
+    el.className = 'pill warn';
+    el.textContent = queued > 0 ? `Offline · ${queued} to sync` : 'Offline';
+    return;
+  }
+  if (queued > 0) {
+    el.hidden = false;
+    el.className = 'pill warn';
+    el.textContent = `Syncing ${queued}…`;
+    return;
+  }
+  el.hidden = true;
+}
+
+onQueueChange(paintSync);
+window.addEventListener('offline', () => paintSync(queueSize()));
+
+async function drainAndRefresh() {
+  if (!navigator.onLine) return;
+  await syncOffline();
+  // Show the synced state on whatever screen the secretary is looking at.
+  await route();
+}
+window.addEventListener('online', drainAndRefresh);
+
+// Register the service worker so the shell and the reads it has seen survive
+// going offline. It is a progressive enhancement: if it fails to register the
+// app still runs, just without the offline cache.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 await init();
 const org = session().orgId;
 if (org) {
   document.getElementById('orgLabel').textContent = `org ${org.slice(0, 8)}`;
 }
 await route();
+// Drain anything left queued from a previous offline session.
+drainAndRefresh();

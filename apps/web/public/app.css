@@ -274,17 +274,72 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
 }
 .toast.bad { background: var(--stop); color: #fff; }
 
+/* ---- Small screens -----------------------------------------------------
+ * A secretary works the desk from a phone as often as a laptop — at the gate,
+ * in the stands, walking the back pens. The layout is already single-column;
+ * these are the adjustments that keep it usable at 380px: the top bar wraps
+ * instead of crushing the breadcrumb, the wide arena tables scroll sideways
+ * under a thumb rather than spilling off the page, and the headings ease off.
+ */
+@media (max-width: 620px) {
+  .view { padding: 16px 12px 96px; }
+  h1 { font-size: 23px; }
+  h2 { font-size: 18px; }
+
+  .topbar { flex-wrap: wrap; gap: 8px 12px; padding: 8px 12px; }
+  .crumbs { order: 3; flex-basis: 100%; font-size: 14px; }
+
+  /* Any table wider than the phone scrolls inside its card on its own, with
+     momentum scrolling on iOS, instead of forcing the whole page sideways. */
+  .card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .sheet table, table.sheet { min-width: 520px; }
+
+  /* Score entry stays thumb-sized rather than shrinking to fit a column. */
+  .scoreinput { max-width: none; width: 100%; }
+}
+
 /* ---- Print -------------------------------------------------------------
  * The arena runs on paper. What prints has to be the sheet and nothing else.
  */
 @media print {
-  .topbar, .toast, .actions, .noprint { display: none !important; }
+  @page { margin: 1.5cm; }
+
+  /* Interactive chrome has no place on paper: the toast, the action buttons,
+     the selects and links that only work on a screen, and the print button
+     itself. The arena reads the form, it does not click it. */
+  .toast, .actions, .noprint, .brand, .topbar-right,
+  select, button, .row-link { display: none !important; }
+
   body { background: #fff; color: #000; font-size: 11pt; }
   .view { max-width: none; padding: 0; }
-  .card { border: none; padding: 0; margin: 0 0 12pt; }
+
+  /* The top bar collapses to a plain document header: the breadcrumb already
+     carries the rodeo and the form name, which is exactly the heading a filed
+     sheet needs. */
+  .topbar {
+    position: static; display: block; border: none; padding: 0 0 8pt;
+    margin: 0 0 8pt; border-bottom: 1px solid #000; background: none;
+  }
+  .crumbs { font-size: 10pt; color: #000; }
+  .crumbs a::after { content: ' / '; color: #000; }
+  .crumbs a:last-child::after { content: ''; }
+
+  .card { border: none; padding: 0; margin: 0 0 12pt; break-inside: avoid; }
   .sheet td, .sheet th { border-color: #999; }
   .sheet tr { break-inside: avoid; }
+  h1 { font-size: 15pt; }
   h2 { break-after: avoid; }
+
+  /* A data field prints as its value on the line, not as an on-screen input
+     box — a printed receipt or measurement sheet should read as a finished
+     document. Empty fields keep a rule so they can be written on by hand. */
+  input, textarea {
+    border: none !important; border-bottom: 1px solid #999 !important;
+    padding: 0 !important; background: none !important; color: #000 !important;
+    -webkit-appearance: none; appearance: none;
+  }
+  input[type='checkbox'] { border: 1px solid #000 !important; }
+  .scoreinput { width: auto; min-width: 3em; }
 }
 
 /* ---- Grounds, releases, year-end ---------------------------------------- */

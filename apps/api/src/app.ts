@@ -34,6 +34,10 @@ import { registerTimersModule } from './modules/timers/routes.ts';
 import { registerPerformanceModule } from './modules/performance/routes.ts';
 import { registerRemittanceModule } from './modules/remittance/routes.ts';
 import { registerAssociationUploadModule } from './modules/association_upload/routes.ts';
+import { registerCheckInModule } from './modules/checkin/routes.ts';
+import { registerArenaCheckModule } from './modules/arena_check/routes.ts';
+import { registerGroundRulesModule } from './modules/groundrules/routes.ts';
+import { registerJudgeCardsModule } from './modules/judge_cards/routes.ts';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -146,6 +150,10 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
     await scoped.register(registerPerformanceModule);
     await scoped.register(registerRemittanceModule);
     await scoped.register(registerAssociationUploadModule);
+    await scoped.register(registerCheckInModule);
+    await scoped.register(registerArenaCheckModule);
+    await scoped.register(registerGroundRulesModule);
+    await scoped.register(registerJudgeCardsModule);
   }, { prefix: '/v1/orgs/:org_id' });
 
   return app;

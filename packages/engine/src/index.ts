@@ -24,6 +24,11 @@ export {
 } from './money.ts';
 
 export { calculateJudgedScore } from './scoring/judged.ts';
+export { combineJudgeCards } from './scoring/judge_cards.ts';
+export type {
+  CombinedJudgedScore,
+  JudgeCard,
+} from './scoring/judge_cards.ts';
 export { calculateTimedScore } from './scoring/timed.ts';
 export { rankResults, tieGroups } from './scoring/rank.ts';
 export {
@@ -91,7 +96,12 @@ export type {
   SubscriptionPricing,
 } from './pricing/engine.ts';
 
-export { buildDaySheet, dragMarks, renderDaySheetText } from './daysheet/engine.ts';
+export {
+  applyOperationalOverlay,
+  buildDaySheet,
+  dragMarks,
+  renderDaySheetText,
+} from './daysheet/engine.ts';
 export type {
   DaySheet,
   DaySheetEntry,
@@ -102,7 +112,10 @@ export type {
   DaySheetSection,
   DaySheetStock,
   DragMark,
+  OverlayableEntry,
   RunFlag,
+  TradeOverlayRow,
+  TurnoutOverlayRow,
 } from './daysheet/engine.ts';
 
 export {

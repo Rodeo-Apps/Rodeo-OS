@@ -8,7 +8,7 @@
  */
 
 import { api } from '../api.js';
-import { crumbs, h, render, showPrint, toast } from '../ui.js';
+import { crumbs, h, poll, render, showPrint, toast } from '../ui.js';
 
 const STATE_LABEL = {
   not_started: 'Not started',
@@ -195,4 +195,12 @@ export async function performanceModeView(rodeoId) {
   }
 
   await load();
+  // Keep the office and arena screens agreeing on what is up. A refresh that
+  // fired while someone was mid-entry would wipe the form under their hands, so
+  // it holds off whenever a field on this screen has focus.
+  poll(() => {
+    const active = document.activeElement;
+    if (active && ['INPUT', 'SELECT', 'TEXTAREA'].includes(active.tagName)) return;
+    return load();
+  }, 15000);
 }
