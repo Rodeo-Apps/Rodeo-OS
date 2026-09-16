@@ -1059,3 +1059,134 @@ export async function upsertGroundRules(
   `;
   return row;
 }
+
+
+
+// ===========================================================================
+// Form C — Riding-event judge cards (migration 0032)
+//
+// Each judge's card is staged on its own; the engine (combineJudgeCards) pairs
+// the two into a run's score. This layer only reads and writes the cards.
+// ===========================================================================
+
+export interface JudgeCardRow {
+  id: string;
+  org_id: string;
+  rodeo_id: string;
+  rodeo_event_id: string;
+  entry_id: string;
+  contestant_id: string | null;
+  go_round: number;
+  performance: number | null;
+  judge_id: string | null;
+  judge_position: number;
+  rider_score: number | null;
+  animal_score: number | null;
+  marked_out: boolean | null;
+  dq_note: string | null;
+  reride_flag: boolean;
+  signed: boolean;
+  signed_at: string | null;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JudgeCardInput {
+  entry_id: string;
+  contestant_id?: string | null;
+  go_round?: number;
+  performance?: number | null;
+  judge_id?: string | null;
+  judge_position: number;
+  rider_score?: number | null;
+  animal_score?: number | null;
+  marked_out?: boolean | null;
+  dq_note?: string | null;
+  reride_flag?: boolean;
+  signed?: boolean;
+  notes?: string | null;
+  created_by?: string | null;
+}
+
+export async function listJudgeCards(
+  tx: Tx,
+  orgId: string,
+  eventId: string,
+  goRound?: number,
+): Promise<JudgeCardRow[]> {
+  if (goRound === undefined) {
+    return tx<JudgeCardRow[]>`
+      select * from judge_cards
+       where org_id = ${orgId} and rodeo_event_id = ${eventId}
+       order by go_round, entry_id, judge_position
+    `;
+  }
+  return tx<JudgeCardRow[]>`
+    select * from judge_cards
+     where org_id = ${orgId} and rodeo_event_id = ${eventId}
+       and go_round = ${goRound}
+     order by entry_id, judge_position
+  `;
+}
+
+/**
+ * Upsert one judge's card for a run. Keyed on the chair, so a judge turning in
+ * a corrected card updates in place rather than stacking a second row. A card
+ * that is marked signed stamps signed_at at write time.
+ */
+export async function upsertJudgeCard(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+  eventId: string,
+  input: JudgeCardInput,
+): Promise<JudgeCardRow> {
+  const signedAt = input.signed ? new Date().toISOString() : null;
+  const [row] = await tx<JudgeCardRow[]>`
+    insert into judge_cards
+      (org_id, rodeo_id, rodeo_event_id, entry_id, contestant_id, go_round,
+       performance, judge_id, judge_position, rider_score, animal_score,
+       marked_out, dq_note, reride_flag, signed, signed_at, notes, created_by)
+    values
+      (${orgId}, ${rodeoId}, ${eventId}, ${input.entry_id},
+       ${input.contestant_id ?? null}, ${input.go_round ?? 1},
+       ${input.performance ?? null}, ${input.judge_id ?? null},
+       ${input.judge_position}, ${input.rider_score ?? null},
+       ${input.animal_score ?? null}, ${input.marked_out ?? null},
+       ${input.dq_note ?? null}, ${input.reride_flag ?? false},
+       ${input.signed ?? false}, ${signedAt}, ${input.notes ?? null},
+       ${input.created_by ?? null})
+    on conflict (org_id, rodeo_event_id, entry_id, go_round, judge_position)
+    do update set
+      contestant_id = excluded.contestant_id,
+      performance   = excluded.performance,
+      judge_id      = excluded.judge_id,
+      rider_score   = excluded.rider_score,
+      animal_score  = excluded.animal_score,
+      marked_out    = excluded.marked_out,
+      dq_note       = excluded.dq_note,
+      reride_flag   = excluded.reride_flag,
+      signed        = excluded.signed,
+      signed_at     = case when excluded.signed then coalesce(judge_cards.signed_at, excluded.signed_at)
+                           else null end,
+      notes         = excluded.notes,
+      updated_at    = now()
+    returning *
+  `;
+  return row;
+}
+
+export async function deleteJudgeCard(
+  tx: Tx,
+  orgId: string,
+  cardId: string,
+): Promise<JudgeCardRow | null> {
+  const [row] = await tx<JudgeCardRow[]>`
+    delete from judge_cards
+     where org_id = ${orgId} and id = ${cardId}
+    returning *
+  `;
+  return row ?? null;
+}

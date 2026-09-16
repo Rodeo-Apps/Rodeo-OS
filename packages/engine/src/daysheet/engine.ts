@@ -45,6 +45,7 @@ export type RunFlag =
 /** One contestant's scheduled run, as it appears on the sheet. */
 export interface DaySheetRun {
   position: number;
+  entry_id: string;
   back_number: string | null;
   contestant_id: string;
   contestant_name: string;
@@ -266,6 +267,7 @@ export function buildDaySheet(input: DaySheetInput): DaySheet {
         const stock = stockByEntry.get(`${e.entry_id}:${e.go_round}`);
         return {
           position: scratched ? 0 : position,
+          entry_id: e.entry_id,
           back_number: e.back_number ?? null,
           contestant_id: e.contestant_id,
           contestant_name: e.contestant_name,

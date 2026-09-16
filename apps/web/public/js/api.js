@@ -291,4 +291,15 @@ export const api = {
   groundRules: (rodeoId) => request('GET', `/rodeos/${rodeoId}/ground-rules`),
   saveGroundRules: (rodeoId, body) =>
     request('PUT', `/rodeos/${rodeoId}/ground-rules`, body),
+
+  // Form C — riding-event judge cards, one judge per card.
+  judgeCards: (rodeoId, eventId, params = {}) =>
+    request('GET',
+      `/rodeos/${rodeoId}/events/${eventId}/judge-cards${
+        Object.keys(params).length ? `?${new URLSearchParams(params)}` : ''
+      }`),
+  saveJudgeCard: (rodeoId, eventId, body) =>
+    request('PUT', `/rodeos/${rodeoId}/events/${eventId}/judge-cards`, body),
+  deleteJudgeCard: (rodeoId, eventId, cardId) =>
+    request('DELETE', `/rodeos/${rodeoId}/events/${eventId}/judge-cards/${cardId}`),
 };

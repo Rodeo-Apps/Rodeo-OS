@@ -24,6 +24,11 @@ export {
 } from './money.ts';
 
 export { calculateJudgedScore } from './scoring/judged.ts';
+export { combineJudgeCards } from './scoring/judge_cards.ts';
+export type {
+  CombinedJudgedScore,
+  JudgeCard,
+} from './scoring/judge_cards.ts';
 export { calculateTimedScore } from './scoring/timed.ts';
 export { rankResults, tieGroups } from './scoring/rank.ts';
 export {
