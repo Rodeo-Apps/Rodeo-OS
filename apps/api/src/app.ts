@@ -26,6 +26,14 @@ import { registerBooksModule } from './modules/books/routes.ts';
 import { registerSanctionModule } from './modules/sanction/routes.ts';
 import { registerRecordModule } from './modules/record/routes.ts';
 import { registerGroundsModule } from './modules/grounds/routes.ts';
+import { registerTurnoutsModule } from './modules/turnouts/routes.ts';
+import { registerTradesModule } from './modules/trades/routes.ts';
+import { registerInfractionsModule } from './modules/infractions/routes.ts';
+import { registerPersonnelSigninModule } from './modules/personnel/routes.ts';
+import { registerTimersModule } from './modules/timers/routes.ts';
+import { registerPerformanceModule } from './modules/performance/routes.ts';
+import { registerRemittanceModule } from './modules/remittance/routes.ts';
+import { registerAssociationUploadModule } from './modules/association_upload/routes.ts';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -128,6 +136,16 @@ export async function buildApp(opts: BuildOptions): Promise<FastifyInstance> {
     await scoped.register(registerScoringModule);
     await scoped.register(registerPayoutsModule);
     await scoped.register(registerSyncModule);
+
+    // Secretary module (Phase 1)
+    await scoped.register(registerTurnoutsModule);
+    await scoped.register(registerTradesModule);
+    await scoped.register(registerInfractionsModule);
+    await scoped.register(registerPersonnelSigninModule);
+    await scoped.register(registerTimersModule);
+    await scoped.register(registerPerformanceModule);
+    await scoped.register(registerRemittanceModule);
+    await scoped.register(registerAssociationUploadModule);
   }, { prefix: '/v1/orgs/:org_id' });
 
   return app;

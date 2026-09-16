@@ -178,3 +178,65 @@ export {
   determineApplicableRule,
 } from './payouts/withholding.ts';
 export type { WithholdingContext } from './payouts/withholding.ts';
+
+// ---------------------------------------------------------------------------
+// Secretary module (Phase 1)
+//
+// The desk work between the last score and the trailer leaving: the turnout
+// log, stock trades, rule infractions and field fines, two-timer
+// reconciliation, the close-out remittance, and the association packet.
+// ---------------------------------------------------------------------------
+
+export { classifyTurnoutLog, summarizeTurnoutLog } from './turnout/engine.ts';
+export type {
+  TurnoutLogType,
+  TurnoutLogInput,
+  TurnoutLogResult,
+  TurnoutSummaryRow,
+  TurnoutSummary,
+} from './turnout/engine.ts';
+
+export { validateTrade, tradesRemaining } from './trades/engine.ts';
+export type {
+  TradeDiscipline,
+  TradeSection,
+  TradeInput,
+  TradeValidation,
+} from './trades/engine.ts';
+
+export { validateInfraction, summarizeInfractions } from './infraction/engine.ts';
+export type {
+  InfractionType,
+  InfractionInput,
+  InfractionValidation,
+  InfractionSummaryRow,
+  InfractionSummary,
+} from './infraction/engine.ts';
+
+export { reconcileTimers } from './timer/reconcile.ts';
+export type {
+  TimerReconcileInput,
+  TimerReconcileResult,
+} from './timer/reconcile.ts';
+
+export { reconcileRemittance } from './remittance/engine.ts';
+export type {
+  RemittanceInput,
+  RemittanceLedger,
+  RemittanceResult,
+} from './remittance/engine.ts';
+
+export {
+  PACKET_ITEM_LABELS,
+  associationPacketDeadline,
+  checkPacket,
+  requiredPacketItems,
+} from './upload/engine.ts';
+export type {
+  DeadlineMode,
+  PacketCheck,
+  PacketCheckItem,
+  PacketDeadline,
+  PacketDeadlineInput,
+  PacketItemCode,
+} from './upload/engine.ts';

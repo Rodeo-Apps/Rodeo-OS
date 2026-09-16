@@ -220,4 +220,59 @@ export const api = {
 
   // ---- Year-end -----------------------------------------------------------
   taxSummary: (year) => request('GET', `/tax-summary?year=${year}`),
+
+  // ---- Secretary module (Phase 1) -----------------------------------------
+  // Turnout log — who did not show, and what it costs them.
+  turnouts: (rodeoId) => request('GET', `/rodeos/${rodeoId}/turnouts`),
+  logTurnout: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/turnouts`, body),
+
+  // Trades / doctor releases — position moves, capped per go.
+  trades: (rodeoId) => request('GET', `/rodeos/${rodeoId}/trades`),
+  logTrade: (rodeoId, body) => request('POST', `/rodeos/${rodeoId}/trades`, body),
+
+  // Infractions — barrier, field, conduct. Posted ones are locked.
+  infractions: (rodeoId) => request('GET', `/rodeos/${rodeoId}/infractions`),
+  logInfraction: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/infractions`, body),
+  verifyInfraction: (rodeoId, id) =>
+    request('POST', `/rodeos/${rodeoId}/infractions/${id}/verify`, {}),
+  postInfraction: (rodeoId, id) =>
+    request('POST', `/rodeos/${rodeoId}/infractions/${id}/post`, {}),
+
+  // Personnel sign-ins — the crew present today.
+  personnelSignins: (rodeoId) =>
+    request('GET', `/rodeos/${rodeoId}/personnel-signins`),
+  addPersonnelSignin: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/personnel-signins`, body),
+  removePersonnelSignin: (rodeoId, id) =>
+    request('DELETE', `/rodeos/${rodeoId}/personnel-signins/${id}`),
+
+  // Two-timer sheet — record each watch, then reconcile to an official time.
+  timerReadings: (rodeoId, eventId) =>
+    request('GET',
+      `/rodeos/${rodeoId}/timer-readings${eventId ? `?event_id=${eventId}` : ''}`),
+  recordTimer: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/timer-readings`, body),
+  reconcileTimer: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/timer-readings/reconcile`, body),
+
+  // Live performance state — what is up right now.
+  performanceState: (rodeoId) =>
+    request('GET', `/rodeos/${rodeoId}/performance-state`),
+  setPerformanceState: (rodeoId, performanceNumber, body) =>
+    request('PUT', `/rodeos/${rodeoId}/performance-state/${performanceNumber}`, body),
+
+  // Close-out cover sheet — money in, money out, expected deposit.
+  remittance: (rodeoId) => request('GET', `/rodeos/${rodeoId}/remittance`),
+  setRemittance: (rodeoId, category, body) =>
+    request('PUT', `/rodeos/${rodeoId}/remittance/${category}`, body),
+
+  // Association packet — the checklist and the filing deadline.
+  associationUpload: (rodeoId) =>
+    request('GET', `/rodeos/${rodeoId}/association-upload`),
+  startAssociationUpload: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/association-upload`, body),
+  updateAssociationUpload: (rodeoId, id, body) =>
+    request('PUT', `/rodeos/${rodeoId}/association-upload/${id}`, body),
 };
