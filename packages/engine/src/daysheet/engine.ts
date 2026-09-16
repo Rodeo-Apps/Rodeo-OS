@@ -411,3 +411,117 @@ function pad(value: string, width: number): string {
   const v = value.length > width - 1 ? value.slice(0, width - 2) + '…' : value;
   return v.padEnd(width, ' ');
 }
+
+
+// ---------------------------------------------------------------------------
+// Operational overlay
+//
+// The day sheet is a derived view. Turnouts and confirmed trades each live in
+// their own immutable log — the legal record — and never rewrite the entry they
+// describe. But the sheet has to show what will actually happen at the gate:
+// who turned out, and who moved. This pure function folds the current state of
+// those two logs onto a copy of the entry list, so the caller can load the raw
+// draw and the two logs separately and still hand the builder a sheet that is
+// true to tonight. No I/O, no clock — same inputs, same sheet, every time.
+// ---------------------------------------------------------------------------
+
+/** A turnout log row, reduced to only what the sheet needs. */
+export interface TurnoutOverlayRow {
+  entry_id: string | null;
+  contestant_id: string | null;
+  rodeo_event_id: string | null;
+}
+
+/** A confirmed trade, reduced to only what the sheet needs. */
+export interface TradeOverlayRow {
+  rodeo_event_id: string;
+  go_round_number: number;
+  contestant_a_id: string;
+  contestant_b_id: string | null;
+  is_open: boolean;
+  from_performance_number: number | null;
+  from_position: number | null;
+  to_performance_number: number | null;
+  to_position: number | null;
+}
+
+/** The minimum an entry must expose to be reconciled. */
+export interface OverlayableEntry {
+  entry_id: string;
+  contestant_id: string;
+  rodeo_event_id: string;
+  go_round: number;
+  draw_position: number | null;
+  performance_number: number | null;
+  status: string;
+}
+
+/**
+ * Fold turnouts and confirmed trades onto a copy of the entry list.
+ *
+ * Turnouts: every turnout type (TO/NTO/PTO/DR/VI/DO) means the contestant does
+ * not compete, so any logged turnout flags the entry `turned_out` — unless it
+ * is already a harder scratch, which is left alone. A turned-out entry keeps
+ * its row (the gate man needs to see the hole) but the builder drops it from
+ * the running count.
+ *
+ * Trades: applied in trade order. Each moves contestant A into the target slot;
+ * a two-sided trade swaps B back into A's old slot; an open trade fills a
+ * vacated slot and has no B. Matched on contestant + event + go-round.
+ *
+ * Returns a new array of shallow-cloned entries; the input is never mutated.
+ */
+export function applyOperationalOverlay<T extends OverlayableEntry>(
+  entries: T[],
+  turnouts: TurnoutOverlayRow[],
+  trades: TradeOverlayRow[],
+): T[] {
+  const next = entries.map((e) => ({ ...e }));
+
+  const turnedOutEntryIds = new Set<string>();
+  const turnedOutByContestant = new Set<string>();
+  for (const t of turnouts) {
+    if (t.entry_id) turnedOutEntryIds.add(t.entry_id);
+    else if (t.contestant_id && t.rodeo_event_id) {
+      turnedOutByContestant.add(`${t.contestant_id}:${t.rodeo_event_id}`);
+    }
+  }
+
+  for (const e of next) {
+    const out =
+      turnedOutEntryIds.has(e.entry_id) ||
+      turnedOutByContestant.has(`${e.contestant_id}:${e.rodeo_event_id}`);
+    if (out && e.status !== 'scratched' && e.status !== 'no_show') {
+      e.status = 'turned_out';
+    }
+  }
+
+  const find = (contestantId: string, eventId: string, round: number) =>
+    next.find(
+      (e) =>
+        e.contestant_id === contestantId &&
+        e.rodeo_event_id === eventId &&
+        e.go_round === round,
+    );
+
+  for (const tr of trades) {
+    const a = find(tr.contestant_a_id, tr.rodeo_event_id, tr.go_round_number);
+    const b = tr.contestant_b_id
+      ? find(tr.contestant_b_id, tr.rodeo_event_id, tr.go_round_number)
+      : undefined;
+    if (a && tr.to_position !== null) {
+      a.draw_position = tr.to_position;
+      if (tr.to_performance_number !== null) {
+        a.performance_number = tr.to_performance_number;
+      }
+    }
+    if (b && !tr.is_open && tr.from_position !== null) {
+      b.draw_position = tr.from_position;
+      if (tr.from_performance_number !== null) {
+        b.performance_number = tr.from_performance_number;
+      }
+    }
+  }
+
+  return next;
+}

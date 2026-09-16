@@ -10,6 +10,7 @@
  * binds TEXT and stores a jsonb string scalar. See docs/SPEC-DELTAS.md D26.
  */
 
+import { applyOperationalOverlay } from '@rodeo-os/engine';
 import type {
   BooksEntryRow,
   BooksEventRow,
@@ -170,6 +171,59 @@ export async function loadDaySheet(
    where en.org_id = ${orgId} and en.rodeo_id = ${rodeoId}
   `;
 
+  // --------------------------------------------------------------------------
+  // Operational overlay.
+  //
+  // The day sheet is a DERIVED view, not a source of truth. Turnouts live in
+  // their own immutable log and confirmed trades live in theirs; neither one
+  // edits the entry it describes, because those logs are the legal record and
+  // must never be rewritten after the fact. But the announcer, the gate man and
+  // the chute boss need the sheet to show what will actually happen tonight —
+  // who is out, and who moved. So the current state of those two logs is folded
+  // onto the entry rows HERE, in memory, right before the sheet is built. The
+  // logs stay untouched; the draw stays authoritative; the sheet stays honest.
+  // --------------------------------------------------------------------------
+  const turnoutRows = await tx<
+    {
+      entry_id: string | null;
+      contestant_id: string | null;
+      rodeo_event_id: string | null;
+    }[]
+  >`
+    select entry_id, contestant_id, rodeo_event_id
+      from turnout_log
+     where org_id = ${orgId} and rodeo_id = ${rodeoId}
+  `;
+
+  const tradeRows = await tx<
+    {
+      rodeo_event_id: string;
+      go_round_number: number;
+      contestant_a_id: string;
+      contestant_b_id: string | null;
+      is_open: boolean;
+      from_performance_number: number | null;
+      from_position: number | null;
+      to_performance_number: number | null;
+      to_position: number | null;
+    }[]
+  >`
+    select rodeo_event_id, go_round_number, contestant_a_id, contestant_b_id,
+           is_open, from_performance_number, from_position,
+           to_performance_number, to_position
+      from trades
+     where org_id = ${orgId} and rodeo_id = ${rodeoId} and status = 'confirmed'
+     order by trade_number
+  `;
+
+  // The reconciliation itself is pure logic, so it lives in the engine and is
+  // tested there. This layer only gathers the rows and hands them over.
+  const reconciledEntries = applyOperationalOverlay(
+    entryRows,
+    turnoutRows,
+    tradeRows,
+  );
+
   const stockRows = await tx<
     {
       entry_id: string;
@@ -245,7 +299,7 @@ export async function loadDaySheet(
       is_roughstock: e.is_roughstock,
       sort_order: e.sort_order,
     })),
-    entries: entryRows.map((e) => ({
+    entries: reconciledEntries.map((e) => ({
       entry_id: e.entry_id,
       rodeo_event_id: e.rodeo_event_id,
       contestant_id: e.contestant_id,

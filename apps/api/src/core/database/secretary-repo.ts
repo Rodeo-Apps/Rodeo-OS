@@ -22,7 +22,7 @@
  *     forgets to ask the engine.
  */
 
-import type { Tx } from './client.ts';
+import type { Json, Tx } from './client.ts';
 
 // ===========================================================================
 // Form F — Turnout / draw-out log
@@ -638,7 +638,7 @@ export async function createAssociationUpload(
        notes, created_by)
     values
       (${orgId}, ${rodeoId}, ${input.association_code},
-       ${input.method ?? 'upload'}, ${tx.json(input.packet_items ?? {})},
+       ${input.method ?? 'upload'}, ${tx.json((input.packet_items ?? {}) as unknown as Json)},
        ${input.deadline_at ?? null}, ${input.notes ?? null},
        ${input.created_by ?? null})
     returning *
@@ -662,7 +662,7 @@ export async function updateAssociationUpload(
   const [row] = await tx<AssociationUploadRow[]>`
     update association_uploads
        set packet_items = coalesce(${
-         input.packet_items != null ? tx.json(input.packet_items) : null
+         input.packet_items != null ? tx.json(input.packet_items as unknown as Json) : null
        }, packet_items),
            status = coalesce(${input.status ?? null}, status),
            submitted_at = coalesce(${input.submitted_at ?? null}::timestamptz, submitted_at),

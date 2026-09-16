@@ -91,7 +91,12 @@ export type {
   SubscriptionPricing,
 } from './pricing/engine.ts';
 
-export { buildDaySheet, dragMarks, renderDaySheetText } from './daysheet/engine.ts';
+export {
+  applyOperationalOverlay,
+  buildDaySheet,
+  dragMarks,
+  renderDaySheetText,
+} from './daysheet/engine.ts';
 export type {
   DaySheet,
   DaySheetEntry,
@@ -102,7 +107,10 @@ export type {
   DaySheetSection,
   DaySheetStock,
   DragMark,
+  OverlayableEntry,
   RunFlag,
+  TradeOverlayRow,
+  TurnoutOverlayRow,
 } from './daysheet/engine.ts';
 
 export {
