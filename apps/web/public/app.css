@@ -274,6 +274,30 @@ button[disabled] { opacity: 0.5; cursor: not-allowed; }
 }
 .toast.bad { background: var(--stop); color: #fff; }
 
+/* ---- Small screens -----------------------------------------------------
+ * A secretary works the desk from a phone as often as a laptop — at the gate,
+ * in the stands, walking the back pens. The layout is already single-column;
+ * these are the adjustments that keep it usable at 380px: the top bar wraps
+ * instead of crushing the breadcrumb, the wide arena tables scroll sideways
+ * under a thumb rather than spilling off the page, and the headings ease off.
+ */
+@media (max-width: 620px) {
+  .view { padding: 16px 12px 96px; }
+  h1 { font-size: 23px; }
+  h2 { font-size: 18px; }
+
+  .topbar { flex-wrap: wrap; gap: 8px 12px; padding: 8px 12px; }
+  .crumbs { order: 3; flex-basis: 100%; font-size: 14px; }
+
+  /* Any table wider than the phone scrolls inside its card on its own, with
+     momentum scrolling on iOS, instead of forcing the whole page sideways. */
+  .card { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .sheet table, table.sheet { min-width: 520px; }
+
+  /* Score entry stays thumb-sized rather than shrinking to fit a column. */
+  .scoreinput { max-width: none; width: 100%; }
+}
+
 /* ---- Print -------------------------------------------------------------
  * The arena runs on paper. What prints has to be the sheet and nothing else.
  */

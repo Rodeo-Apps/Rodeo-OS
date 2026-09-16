@@ -1,0 +1,19 @@
+{
+  "name": "RodeoApps OS — Secretary",
+  "short_name": "Secretary",
+  "description": "The rodeo office, from entries through the association filing — built to keep working when the arena network does not.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#8a1c1c",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

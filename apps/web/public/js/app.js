@@ -7,8 +7,9 @@
  * open.
  */
 
-import { api, init, session, setSession, clearSession } from './api.js';
+import { api, init, session, setSession, clearSession, syncOffline } from './api.js';
 import { crumbs, h, render, showPrint, stopPoll, toast } from './ui.js';
+import { onQueueChange, queueSize } from './offline.js';
 
 const routes = [
   [/^\/?$/, () => import('./views/rodeo.js').then((m) => m.listView())],
@@ -207,9 +208,58 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+/**
+ * Offline status and sync.
+ *
+ * The top bar carries one small pill that tells the truth about the connection:
+ * how many writes are waiting on this device, or that the app is offline and
+ * running on cached data. When the connection returns — the browser's `online`
+ * event, or simply coming back to the tab — the queue drains automatically and
+ * the current view is refreshed so the secretary sees the synced result.
+ */
+function paintSync(queued) {
+  const el = document.getElementById('syncLabel');
+  if (!el) return;
+  if (!navigator.onLine) {
+    el.hidden = false;
+    el.className = 'pill warn';
+    el.textContent = queued > 0 ? `Offline · ${queued} to sync` : 'Offline';
+    return;
+  }
+  if (queued > 0) {
+    el.hidden = false;
+    el.className = 'pill warn';
+    el.textContent = `Syncing ${queued}…`;
+    return;
+  }
+  el.hidden = true;
+}
+
+onQueueChange(paintSync);
+window.addEventListener('offline', () => paintSync(queueSize()));
+
+async function drainAndRefresh() {
+  if (!navigator.onLine) return;
+  await syncOffline();
+  // Show the synced state on whatever screen the secretary is looking at.
+  await route();
+}
+window.addEventListener('online', drainAndRefresh);
+
+// Register the service worker so the shell and the reads it has seen survive
+// going offline. It is a progressive enhancement: if it fails to register the
+// app still runs, just without the offline cache.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  });
+}
+
 await init();
 const org = session().orgId;
 if (org) {
   document.getElementById('orgLabel').textContent = `org ${org.slice(0, 8)}`;
 }
 await route();
+// Drain anything left queued from a previous offline session.
+drainAndRefresh();

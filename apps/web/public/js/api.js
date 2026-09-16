@@ -7,6 +7,8 @@
  * `error.details.blockers`, and the books screen renders them.
  */
 
+import { enqueue, flush } from './offline.js';
+
 let config = { api_origin: '' };
 let token = localStorage.getItem('rodeo.token') ?? '';
 let orgId = localStorage.getItem('rodeo.org') ?? '';
@@ -48,16 +50,37 @@ export function clearSession() {
   localStorage.removeItem('rodeo.org');
 }
 
+/** Writes that can be safely deferred and replayed when the network returns. */
+const QUEUEABLE = new Set(['POST', 'PUT', 'PATCH']);
+
 async function request(method, path, body, asText = false) {
   const url = `${config.api_origin}/v1/orgs/${orgId}${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (networkError) {
+    // fetch only rejects when the request never reached the server — offline,
+    // DNS, a dropped connection. A data write in that state is not lost: it is
+    // queued and replayed on reconnect. A read simply fails; the service worker
+    // has already served whatever cached copy it had.
+    if (QUEUEABLE.has(method) && !asText) {
+      enqueue({ method, path, body: body ?? null, org: orgId });
+      throw new ApiError(
+        0,
+        'QUEUED_OFFLINE',
+        'Saved on this device — it will sync when you are back online.',
+      );
+    }
+    throw new ApiError(0, 'OFFLINE', 'No connection. This will work again once you are back online.');
+  }
 
   if (asText) {
     if (!res.ok) throw new ApiError(res.status, 'HTTP_ERROR', await res.text());
@@ -70,6 +93,32 @@ async function request(method, path, body, asText = false) {
     throw new ApiError(res.status, e.code ?? 'HTTP_ERROR', e.message ?? res.statusText, e.details);
   }
   return payload.data;
+}
+
+/**
+ * Replay one queued write against the live API. Resolves on success so the
+ * queue advances; rejects (and stays queued) on network failure. A queued write
+ * the server now rejects with an HTTP error is dropped rather than retried
+ * forever — it was answered, just not the way the secretary hoped, and holding
+ * the queue hostage to it would block every good write behind it.
+ */
+async function replay(entry) {
+  const res = await fetch(`${config.api_origin}/v1/orgs/${entry.org}${entry.path}`, {
+    method: entry.method,
+    headers: {
+      ...(entry.body ? { 'content-type': 'application/json' } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+    },
+    body: entry.body ? JSON.stringify(entry.body) : undefined,
+  });
+  // res.ok or an HTTP error both mean the server was reached: the write is done
+  // with, so let the queue move on. Only a thrown fetch (still offline) keeps it.
+  return res.ok;
+}
+
+/** Drain the offline queue. Safe to call repeatedly; it no-ops when empty. */
+export function syncOffline() {
+  return flush(replay);
 }
 
 export const api = {
