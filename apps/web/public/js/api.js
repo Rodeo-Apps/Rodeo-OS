@@ -275,4 +275,20 @@ export const api = {
     request('POST', `/rodeos/${rodeoId}/association-upload`, body),
   updateAssociationUpload: (rodeoId, id, body) =>
     request('PUT', `/rodeos/${rodeoId}/association-upload/${id}`, body),
+
+  // Form H — check-in / fee receipt desk.
+  checkIns: (rodeoId) => request('GET', `/rodeos/${rodeoId}/check-ins`),
+  createCheckIn: (rodeoId, body) =>
+    request('POST', `/rodeos/${rodeoId}/check-ins`, body),
+
+  // Form K — arena measurement / judges' check.
+  arenaMeasurement: (rodeoId) =>
+    request('GET', `/rodeos/${rodeoId}/arena-measurements`),
+  saveArenaMeasurement: (rodeoId, body) =>
+    request('PUT', `/rodeos/${rodeoId}/arena-measurements`, body),
+
+  // Form L — ground rules.
+  groundRules: (rodeoId) => request('GET', `/rodeos/${rodeoId}/ground-rules`),
+  saveGroundRules: (rodeoId, body) =>
+    request('PUT', `/rodeos/${rodeoId}/ground-rules`, body),
 };

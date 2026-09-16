@@ -754,3 +754,308 @@ export async function upsertPerformanceState(
   `;
   return row;
 }
+
+
+// ===========================================================================
+// Form H — Check-in / fee receipt (migration 0031)
+// ===========================================================================
+
+export interface CheckInRow {
+  id: string;
+  org_id: string;
+  rodeo_id: string;
+  entry_id: string | null;
+  contestant_id: string | null;
+  contestant_name: string;
+  member_number: string | null;
+  checked_in_at: string;
+  fees_due_cents: number;
+  fees_paid_cents: number;
+  payment_method: string;
+  receipt_number: string | null;
+  check_number: string | null;
+  taken_by: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface NewCheckIn {
+  entry_id?: string | null;
+  contestant_id?: string | null;
+  contestant_name: string;
+  member_number?: string | null;
+  fees_due_cents?: number;
+  fees_paid_cents?: number;
+  payment_method?: string;
+  receipt_number?: string | null;
+  check_number?: string | null;
+  taken_by?: string | null;
+  notes?: string | null;
+}
+
+export async function listCheckIns(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+): Promise<CheckInRow[]> {
+  return tx<CheckInRow[]>`
+    select *
+      from check_ins
+     where org_id = ${orgId} and rodeo_id = ${rodeoId}
+     order by checked_in_at desc
+  `;
+}
+
+export async function createCheckIn(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+  input: NewCheckIn,
+): Promise<CheckInRow> {
+  const [row] = await tx<CheckInRow[]>`
+    insert into check_ins
+      (org_id, rodeo_id, entry_id, contestant_id, contestant_name, member_number,
+       fees_due_cents, fees_paid_cents, payment_method, receipt_number,
+       check_number, taken_by, notes)
+    values
+      (${orgId}, ${rodeoId}, ${input.entry_id ?? null},
+       ${input.contestant_id ?? null}, ${input.contestant_name},
+       ${input.member_number ?? null}, ${input.fees_due_cents ?? 0},
+       ${input.fees_paid_cents ?? 0}, ${input.payment_method ?? 'cash'},
+       ${input.receipt_number ?? null}, ${input.check_number ?? null},
+       ${input.taken_by ?? null}, ${input.notes ?? null})
+    returning *
+  `;
+  return row;
+}
+
+// ===========================================================================
+// Form K — Arena measurement / judges' check (table from migration 0030)
+// ===========================================================================
+
+export interface ArenaMeasurementRow {
+  id: string;
+  org_id: string;
+  rodeo_id: string;
+  box_length_l: string | null;
+  box_length_r: string | null;
+  scoreline_length: string | null;
+  barrier_height: string | null;
+  electric_eye: boolean;
+  even_cattle_marked: boolean;
+  cloverleaf_measured: boolean;
+  pattern: string | null;
+  flagger_position: string | null;
+  backup_watches: boolean;
+  num_bareback: number | null;
+  num_saddle_bronc: number | null;
+  num_bull: number | null;
+  timed_cattle_count: number | null;
+  fresh_used_note: string | null;
+  humane_issues: string | null;
+  judge1_id: string | null;
+  judge2_id: string | null;
+  measured_at: string | null;
+  posted_with_draw: boolean;
+  notes: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface ArenaMeasurementInput {
+  box_length_l?: string | null;
+  box_length_r?: string | null;
+  scoreline_length?: string | null;
+  barrier_height?: string | null;
+  electric_eye?: boolean;
+  even_cattle_marked?: boolean;
+  cloverleaf_measured?: boolean;
+  pattern?: string | null;
+  flagger_position?: string | null;
+  backup_watches?: boolean;
+  num_bareback?: number | null;
+  num_saddle_bronc?: number | null;
+  num_bull?: number | null;
+  timed_cattle_count?: number | null;
+  fresh_used_note?: string | null;
+  humane_issues?: string | null;
+  measured_at?: string | null;
+  posted_with_draw?: boolean;
+  notes?: string | null;
+  created_by?: string | null;
+}
+
+/**
+ * The arena check is one sheet per rodeo (it covers every event's setup on the
+ * one morning), so the row is fetched — and written — as a singleton.
+ */
+export async function getArenaMeasurement(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+): Promise<ArenaMeasurementRow | null> {
+  const [row] = await tx<ArenaMeasurementRow[]>`
+    select *
+      from arena_measurements
+     where org_id = ${orgId} and rodeo_id = ${rodeoId}
+     order by created_at desc
+     limit 1
+  `;
+  return row ?? null;
+}
+
+export async function upsertArenaMeasurement(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+  input: ArenaMeasurementInput,
+): Promise<ArenaMeasurementRow> {
+  const existing = await getArenaMeasurement(tx, orgId, rodeoId);
+  if (existing) {
+    const [row] = await tx<ArenaMeasurementRow[]>`
+      update arena_measurements set
+        box_length_l = ${input.box_length_l ?? existing.box_length_l},
+        box_length_r = ${input.box_length_r ?? existing.box_length_r},
+        scoreline_length = ${input.scoreline_length ?? existing.scoreline_length},
+        barrier_height = ${input.barrier_height ?? existing.barrier_height},
+        electric_eye = ${input.electric_eye ?? existing.electric_eye},
+        even_cattle_marked = ${input.even_cattle_marked ?? existing.even_cattle_marked},
+        cloverleaf_measured = ${input.cloverleaf_measured ?? existing.cloverleaf_measured},
+        pattern = ${input.pattern ?? existing.pattern},
+        flagger_position = ${input.flagger_position ?? existing.flagger_position},
+        backup_watches = ${input.backup_watches ?? existing.backup_watches},
+        num_bareback = ${input.num_bareback ?? existing.num_bareback},
+        num_saddle_bronc = ${input.num_saddle_bronc ?? existing.num_saddle_bronc},
+        num_bull = ${input.num_bull ?? existing.num_bull},
+        timed_cattle_count = ${input.timed_cattle_count ?? existing.timed_cattle_count},
+        fresh_used_note = ${input.fresh_used_note ?? existing.fresh_used_note},
+        humane_issues = ${input.humane_issues ?? existing.humane_issues},
+        measured_at = ${input.measured_at ?? existing.measured_at},
+        posted_with_draw = ${input.posted_with_draw ?? existing.posted_with_draw},
+        notes = ${input.notes ?? existing.notes}
+      where org_id = ${orgId} and id = ${existing.id}
+      returning *
+    `;
+    return row;
+  }
+  const [row] = await tx<ArenaMeasurementRow[]>`
+    insert into arena_measurements
+      (org_id, rodeo_id, box_length_l, box_length_r, scoreline_length,
+       barrier_height, electric_eye, even_cattle_marked, cloverleaf_measured,
+       pattern, flagger_position, backup_watches, num_bareback, num_saddle_bronc,
+       num_bull, timed_cattle_count, fresh_used_note, humane_issues, measured_at,
+       posted_with_draw, notes, created_by)
+    values
+      (${orgId}, ${rodeoId}, ${input.box_length_l ?? null},
+       ${input.box_length_r ?? null}, ${input.scoreline_length ?? null},
+       ${input.barrier_height ?? null}, ${input.electric_eye ?? false},
+       ${input.even_cattle_marked ?? false}, ${input.cloverleaf_measured ?? false},
+       ${input.pattern ?? null}, ${input.flagger_position ?? null},
+       ${input.backup_watches ?? false}, ${input.num_bareback ?? null},
+       ${input.num_saddle_bronc ?? null}, ${input.num_bull ?? null},
+       ${input.timed_cattle_count ?? null}, ${input.fresh_used_note ?? null},
+       ${input.humane_issues ?? null}, ${input.measured_at ?? null},
+       ${input.posted_with_draw ?? false}, ${input.notes ?? null},
+       ${input.created_by ?? null})
+    returning *
+  `;
+  return row;
+}
+
+// ===========================================================================
+// Form L — Ground rules (table from migration 0030, one row per rodeo)
+// ===========================================================================
+
+export interface GroundRulesRow {
+  id: string;
+  org_id: string;
+  rodeo_id: string;
+  city_state: string | null;
+  sanction: string | null;
+  added_money_by_event: string | null;
+  performances_note: string | null;
+  slack_note: string | null;
+  walkup_replacement: boolean;
+  local_events: string | null;
+  special_rules: string | null;
+  committee_contact: string | null;
+  posted_by: string | null;
+  posted_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GroundRulesInput {
+  city_state?: string | null;
+  sanction?: string | null;
+  added_money_by_event?: string | null;
+  performances_note?: string | null;
+  slack_note?: string | null;
+  walkup_replacement?: boolean;
+  local_events?: string | null;
+  special_rules?: string | null;
+  committee_contact?: string | null;
+  post?: boolean;
+  posted_by?: string | null;
+  created_by?: string | null;
+}
+
+export async function getGroundRules(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+): Promise<GroundRulesRow | null> {
+  const [row] = await tx<GroundRulesRow[]>`
+    select *
+      from ground_rules
+     where org_id = ${orgId} and rodeo_id = ${rodeoId}
+     limit 1
+  `;
+  return row ?? null;
+}
+
+export async function upsertGroundRules(
+  tx: Tx,
+  orgId: string,
+  rodeoId: string,
+  input: GroundRulesInput,
+): Promise<GroundRulesRow> {
+  const existing = await getGroundRules(tx, orgId, rodeoId);
+  const postedAt = input.post ? new Date().toISOString() : null;
+  if (existing) {
+    const [row] = await tx<GroundRulesRow[]>`
+      update ground_rules set
+        city_state = ${input.city_state ?? existing.city_state},
+        sanction = ${input.sanction ?? existing.sanction},
+        added_money_by_event = ${input.added_money_by_event ?? existing.added_money_by_event},
+        performances_note = ${input.performances_note ?? existing.performances_note},
+        slack_note = ${input.slack_note ?? existing.slack_note},
+        walkup_replacement = ${input.walkup_replacement ?? existing.walkup_replacement},
+        local_events = ${input.local_events ?? existing.local_events},
+        special_rules = ${input.special_rules ?? existing.special_rules},
+        committee_contact = ${input.committee_contact ?? existing.committee_contact},
+        posted_at = ${input.post ? postedAt : existing.posted_at},
+        posted_by = ${input.post ? (input.posted_by ?? null) : existing.posted_by},
+        updated_at = now()
+      where org_id = ${orgId} and id = ${existing.id}
+      returning *
+    `;
+    return row;
+  }
+  const [row] = await tx<GroundRulesRow[]>`
+    insert into ground_rules
+      (org_id, rodeo_id, city_state, sanction, added_money_by_event,
+       performances_note, slack_note, walkup_replacement, local_events,
+       special_rules, committee_contact, posted_at, posted_by, created_by)
+    values
+      (${orgId}, ${rodeoId}, ${input.city_state ?? null}, ${input.sanction ?? null},
+       ${input.added_money_by_event ?? null}, ${input.performances_note ?? null},
+       ${input.slack_note ?? null}, ${input.walkup_replacement ?? false},
+       ${input.local_events ?? null}, ${input.special_rules ?? null},
+       ${input.committee_contact ?? null}, ${postedAt},
+       ${input.post ? (input.posted_by ?? null) : null}, ${input.created_by ?? null})
+    returning *
+  `;
+  return row;
+}
