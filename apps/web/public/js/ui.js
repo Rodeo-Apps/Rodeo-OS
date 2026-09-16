@@ -107,3 +107,36 @@ export function select(name, options, value, onChange) {
     ),
   );
 }
+
+
+/**
+ * Live refresh.
+ *
+ * A screen that is watched during a performance — scoring, the day sheet as it
+ * runs, the check-in desk totals — should keep itself current without the
+ * secretary reloading. This is deliberate polling, not a socket: the arena
+ * network is a phone hotspot as often as not, a dropped socket that silently
+ * stops updating is worse than a fetch that visibly retries, and the API is
+ * plain REST. One poll runs at a time; the router cancels it before dispatching
+ * the next view, so a view never keeps hitting the server after the secretary
+ * has left it.
+ */
+let activePoll = null;
+
+export function stopPoll() {
+  if (activePoll === null) return;
+  clearInterval(activePoll);
+  activePoll = null;
+}
+
+export function poll(fn, ms = 10000) {
+  stopPoll();
+  activePoll = setInterval(() => {
+    // A poll that throws must not kill the timer; the next tick may succeed once
+    // the network is back.
+    Promise.resolve()
+      .then(fn)
+      .catch(() => {});
+  }, ms);
+  return stopPoll;
+}

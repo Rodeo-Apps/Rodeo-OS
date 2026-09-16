@@ -15,7 +15,7 @@
  */
 
 import { api } from '../api.js';
-import { crumbs, h, render, showPrint, toast } from '../ui.js';
+import { crumbs, h, poll, render, showPrint, toast } from '../ui.js';
 
 const FLAG_LABEL = {
   turned_out: 'TURNED OUT',
@@ -36,6 +36,8 @@ export async function daySheetView(rodeoId, performance) {
   showPrint(() => window.print());
 
   const perf = performance ?? (rodeo.performances[0]?.performance_number ?? null);
+
+  async function draw() {
   const sheet = await api.daySheet(rodeoId, perf);
 
   const picker = h('div', { class: 'actions noprint' },
@@ -145,4 +147,11 @@ export async function daySheetView(rodeoId, performance) {
         `${sheet.footer}    Total runs: ${sheet.total_runs}`),
     ),
   );
+  }
+
+  await draw();
+  // The sheet is read-only, so a refresh never interrupts anyone: it just
+  // reflects scratches, turnouts and confirmed trades made elsewhere while the
+  // performance is under way.
+  poll(draw, 15000);
 }

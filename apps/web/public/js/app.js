@@ -8,7 +8,7 @@
  */
 
 import { api, init, session, setSession, clearSession } from './api.js';
-import { crumbs, h, render, showPrint, toast } from './ui.js';
+import { crumbs, h, render, showPrint, stopPoll, toast } from './ui.js';
 
 const routes = [
   [/^\/?$/, () => import('./views/rodeo.js').then((m) => m.listView())],
@@ -148,6 +148,10 @@ function showError(err) {
 async function route() {
   const path = location.hash.replace(/^#/, '') || '/';
 
+  // Any live refresh from the view we are leaving stops before the next one
+  // starts, so exactly one poll is ever in flight.
+  stopPoll();
+
   if (!session().configured && path !== '/settings') {
     location.hash = '#/settings';
     return;
@@ -170,6 +174,38 @@ async function route() {
 }
 
 window.addEventListener('hashchange', route);
+
+/**
+ * Global keyboard shortcuts.
+ *
+ * The rapid rhythm — type a score, press Enter, drop to the next contestant —
+ * lives inside each entry view. These are the shortcuts that make sense
+ * anywhere, and every one of them stands down the moment a field has focus, so
+ * a secretary typing a horse's name never trips a shortcut. The one exception
+ * is Escape, whose whole job is to let go of a field and stop the rapid entry.
+ */
+const TYPING = new Set(['INPUT', 'SELECT', 'TEXTAREA']);
+window.addEventListener('keydown', (e) => {
+  const typing = TYPING.has(document.activeElement?.tagName);
+
+  if (e.key === 'Escape' && typing) {
+    document.activeElement.blur();
+    return;
+  }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+
+  // p — print the sheet, when the current view offers one.
+  if (e.key === 'p') {
+    const btn = document.getElementById('printBtn');
+    if (btn && !btn.hidden) { e.preventDefault(); btn.click(); }
+    return;
+  }
+  // ? — a reminder of what the keys do.
+  if (e.key === '?') {
+    e.preventDefault();
+    toast('Enter saves and moves down · Esc leaves a field · p prints');
+  }
+});
 
 await init();
 const org = session().orgId;
