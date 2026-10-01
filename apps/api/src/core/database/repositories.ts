@@ -682,7 +682,25 @@ export async function loadServerState(
          and status in ('provisional', 'official', 'no_time')
        limit 1
     `;
-    return row ?? null;
+
+    // The entry the score is for. With two people on the desk, one may have
+    // recorded a turnout for this run on another browser; the authority rule
+    // needs to know the entry is out, and since when.
+    const [entry] = await tx<
+      { entry_status: string; turnout_notified_at: string | null }[]
+    >`
+      select status as entry_status,
+             to_char(turnout_notified_at at time zone 'UTC',
+                     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as turnout_notified_at
+        from entries
+       where org_id = ${orgId} and id = ${entryId}
+    `;
+
+    if (row) return { ...row, ...(entry ?? {}) };
+    // No score yet. A live entry is a plain create, exactly as before; an
+    // entry that is out is state the rule has to see.
+    if (entry && ENTRY_OUT.has(entry.entry_status)) return { ...entry };
+    return null;
   }
 
   if (change.entity_type === 'entry') {
@@ -717,6 +735,9 @@ export async function loadServerState(
 
   return null;
 }
+
+/** Entry statuses that mean the contestant is not running. */
+const ENTRY_OUT = new Set(['scratched', 'turned_out', 'no_show', 'medical_release']);
 
 /** What happened when a change the authority rule let through was applied. */
 export type ApplyOutcome =

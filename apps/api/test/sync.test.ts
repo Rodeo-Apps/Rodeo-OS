@@ -25,11 +25,15 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
   let db: Database;
   let app: Awaited<ReturnType<typeof buildApp>>;
   let judgeApp: Awaited<ReturnType<typeof buildApp>>;
+  let secondApp: Awaited<ReturnType<typeof buildApp>>;
 
   const org = randomUUID();
   const auth = randomUUID();
   const sec = randomUUID();
   const judgeAuth = randomUUID();
+  // The second person on the desk: another secretary login, same role.
+  const auth2 = randomUUID();
+  const sec2 = randomUUID();
   const judge = randomUUID();
   const rodeo = randomUUID();
   const scoringConfig = randomUUID();
@@ -42,7 +46,7 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
   const evMismatch = randomUUID(); // an envelope that is not the server's
   const evCash = randomUUID(); // the secretary pays the envelopes, the judge cannot
 
-  const people = Array.from({ length: 18 }, () => randomUUID());
+  const people = Array.from({ length: 22 }, () => randomUUID());
   const entries: Record<string, { id: string; contestant: string; event: string }> = {};
 
   // Performance 1 starts in two days: enough notice for a turnout told now.
@@ -70,28 +74,34 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
   const headers = { authorization: 'Bearer test' };
 
   // No hand-granted permissions anywhere: the role is the check.
-  function verifier(role: 'secretary' | 'judge') {
+  function verifier(role: 'secretary' | 'judge', who: 'first' | 'second' = 'first') {
+    const person =
+      role === 'judge'
+        ? { sub: judgeAuth, user_id: judge, email: 'jed@example.com' }
+        : who === 'second'
+          ? { sub: auth2, user_id: sec2, email: 'sue@example.com' }
+          : { sub: auth, user_id: sec, email: 'sam@example.com' };
     return {
       verify: async () => ({
-        sub: role === 'secretary' ? auth : judgeAuth,
+        sub: person.sub,
         exp: 9e9,
         iat: 0,
-        email: role === 'secretary' ? 'sam@example.com' : 'jed@example.com',
+        email: person.email,
         app_metadata: {
-          user_id: role === 'secretary' ? sec : judge,
+          user_id: person.user_id,
           org_memberships: [{ org_id: org, role, permissions: [] }],
         },
       }),
     } as never;
   }
 
-  async function sync(changes: unknown[], through = app) {
+  async function sync(changes: unknown[], through = app, clientId = 'desk-test-laptop') {
     const res = await through.inject({
       method: 'POST',
       url: `/v1/orgs/${org}/sync`,
       headers,
       payload: {
-        client_id: 'desk-test-laptop',
+        client_id: clientId,
         last_sync_at: '2026-01-01T00:00:00.000Z',
         changes,
       },
@@ -163,6 +173,9 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
       add('mis2', evMismatch, 1, 2),
       add('cash1', evCash, 1, 1),
       add('cash2', evCash, 1, 2),
+      add('shared', evScore, 2, 2), // both secretaries score this run
+      add('outRun', evScore, 2, 3), // one turns him out, the other scores him
+      add('afterOut', evScore, 2, 4), // the rest of that batch
     ];
 
     await db.asService('offline desk sync fixture', async (tx) => {
@@ -170,6 +183,7 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
                values (${org}, 'Desk Co', ${'desk-' + org.slice(0, 8)}, 'producer')`;
       await tx`insert into users (id, first_name, last_name, supabase_auth_id)
                values (${sec}, 'Sam', 'Secretary', ${auth}),
+                      (${sec2}, 'Sue', 'Secretary', ${auth2}),
                       (${judge}, 'Jed', 'Judgely', ${judgeAuth})`;
       for (let i = 0; i < people.length; i++) {
         await tx`insert into users (id, first_name, last_name)
@@ -177,6 +191,7 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
       }
       await tx`insert into org_members (org_id, user_id, role, accepted_at)
                values (${org}, ${sec}, 'secretary', now()),
+                      (${org}, ${sec2}, 'secretary', now()),
                       (${org}, ${judge}, 'judge', now())`;
       await tx`insert into scoring_configs (id, org_id, name, is_system, config)
                values (${scoringConfig}, ${org}, 'Desk Timed', false,
@@ -221,11 +236,14 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
     app = await buildApp({ db, logger: false, verifier: verifier('secretary') });
     // A judge, who scores but does not pay.
     judgeApp = await buildApp({ db, logger: false, verifier: verifier('judge') });
+    // The second secretary, on the other browser.
+    secondApp = await buildApp({ db, logger: false, verifier: verifier('secretary', 'second') });
   });
 
   after(async () => {
     if (app) await app.close();
     if (judgeApp) await judgeApp.close();
+    if (secondApp) await secondApp.close();
     if (!db) return;
     await db.raw.begin(async (tx) => {
       await tx`set local session_replication_role = 'replica'`;
@@ -240,7 +258,7 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
       await tx`delete from scoring_configs where org_id = ${org}`;
       await tx`delete from payout_configs where org_id = ${org}`;
       await tx`delete from org_members where org_id = ${org}`;
-      await tx`delete from users where id in ${tx([sec, judge, ...people])}`;
+      await tx`delete from users where id in ${tx([sec, sec2, judge, ...people])}`;
       await tx`delete from organizations where id = ${org}`;
     });
     await db.close();
@@ -617,5 +635,65 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
     assert.ok(p.entries.every((e: { fees_paid: boolean }) => typeof e.fees_paid === 'boolean'));
     assert.ok(p.rodeo.performances.every((x: { performance_at: string }) => x.performance_at));
     assert.ok(p.day_sheets[0].sheet.sections[0].runs[0].entry_id, 'runs carry their entry');
+  });
+
+  // =========================================================================
+  // Two people on the desk: two browsers, two secretary logins, one rodeo
+  // =========================================================================
+
+  it('two secretaries score the same run: one accepted, one manual_required, one score row', async () => {
+    // Desk A scores the run first. Desk B, working from its own packet, never
+    // saw that score: a fresh score with no base version.
+    const fromA = scoreChange('shared', 10.5, 10.5);
+    const fromB = scoreChange('shared', 10.75, 10.75);
+    assert.notEqual(fromA.id, fromB.id);
+
+    const a = await sync([fromA], app, 'desk-a-laptop');
+    assert.deepEqual(a.accepted, [fromA.id]);
+
+    const b = await sync([fromB], secondApp, 'desk-b-laptop');
+    assert.equal(b.accepted.length, 0);
+    assert.equal(b.rejected.length, 1);
+    assert.equal(b.rejected[0].client_change_id, fromB.id);
+    assert.equal(b.rejected[0].resolution, 'manual_required');
+    assert.match(b.rejected[0].explanation, /Two 'secretary' sources changed this run/);
+
+    // And with a base version that is not the server's, the same.
+    const staleB = scoreChange('shared', 10.75, 10.75, { base_version: 7, action: 'update' });
+    const again = await sync([staleB], secondApp, 'desk-b-laptop');
+    assert.equal(again.rejected[0].resolution, 'manual_required');
+
+    const rows = await scoresFor('shared');
+    assert.equal(rows.length, 1, 'one score row for the run');
+    assert.equal(rows[0].id, fromA.id);
+    assert.equal(Number(rows[0].final_time), 10.5, 'desk A\'s score was not silently overwritten');
+  });
+
+  it('a turnout from one desk, then the other desk\'s score for that run: refused, and the batch continues', async () => {
+    const toldAt = new Date(Date.parse(ts()) - 60_000).toISOString();
+    const turnout = {
+      id: randomUUID(), entity_type: 'turnout', action: 'create', timestamp: toldAt,
+      source: 'secretary',
+      data: {
+        rodeo_id: rodeo, entry_id: entries.outRun.id, release_type: 'personal',
+        performance_at: perf2At.toISOString(), notified_at: toldAt,
+      },
+    };
+    const a = await sync([turnout], app, 'desk-a-laptop');
+    assert.deepEqual(a.accepted, [turnout.id]);
+
+    // Desk B scored him after the turnout was recorded, and scores the next run.
+    const late = scoreChange('outRun', 9.9, 9.9);
+    const next = scoreChange('afterOut', 11.1, 11.1);
+    const b = await sync([late, next], secondApp, 'desk-b-laptop');
+
+    assert.deepEqual(b.accepted, [next.id], 'the rest of the batch lands');
+    assert.equal(b.rejected.length, 1);
+    assert.equal(b.rejected[0].client_change_id, late.id);
+    assert.equal(b.rejected[0].resolution, 'server_wins');
+    assert.match(b.rejected[0].explanation, /already turned out/);
+
+    assert.equal((await scoresFor('outRun')).length, 0, 'no score for a contestant who is out');
+    assert.equal((await scoresFor('afterOut')).length, 1);
   });
 });

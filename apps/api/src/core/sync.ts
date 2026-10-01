@@ -159,6 +159,26 @@ export function resolveConflict(
     };
   }
 
+  // Two people on the desk: one recorded a turnout for this run, the other a
+  // score. The same rule as a turnout on an entry that is no longer live —
+  // the turnout wins if it was recorded first. A turnout records when she was
+  // told; a score recorded after that is refused, and one recorded before it
+  // goes on to the ordinary rules below.
+  if (change.entity_type === 'score' && serverState.entry_status !== undefined) {
+    const out = ['turned_out', 'medical_release', 'scratched', 'no_show'].includes(
+      String(serverState.entry_status),
+    );
+    const outSince = Date.parse(String(serverState.turnout_notified_at ?? ''));
+    const recorded = Date.parse(change.timestamp);
+    if (out && (!Number.isFinite(outSince) || recorded >= outSince)) {
+      return {
+        winner: 'server',
+        reason: 'entry_not_live',
+        explanation: `The entry is already ${String(serverState.entry_status).replace(/_/g, ' ')} on the server.`,
+      };
+    }
+  }
+
   if (change.entity_type === 'score') {
     const clientSource =
       (change.data.source as string | undefined) ?? change.source;

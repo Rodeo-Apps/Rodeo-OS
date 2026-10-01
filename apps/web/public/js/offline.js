@@ -98,6 +98,17 @@ export async function clientId() {
   return id;
 }
 
+/**
+ * The name this desk goes by on screen: "Desk" and the last six characters
+ * of its client id. With two people on the desk, it is how each can tell
+ * which laptop holds which queue. Nothing is typed and nothing is shared —
+ * each browser only ever shows its own.
+ */
+export async function deskName() {
+  const id = await clientId();
+  return `Desk ${id.replace(/-/g, '').slice(-6).toUpperCase()}`;
+}
+
 // ---------------------------------------------------------------------------
 // The packet
 // ---------------------------------------------------------------------------

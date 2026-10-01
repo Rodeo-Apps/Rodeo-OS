@@ -337,6 +337,9 @@ await test('a score saved with the API down is kept, survives a refresh, and is 
   const text = textOf(byId.get('view')).join(' ');
   assert.ok(text.includes('not on the server'), text.slice(0, 400));
   assert.ok(text.includes('This browser is the copy.'));
+  const desk = await offline.deskName();
+  assert.match(desk, /^Desk [0-9A-F]{6}$/);
+  assert.ok(text.includes(`This browser: ${desk}`), 'the panel names this browser');
   assert.ok(text.includes('1 change(s) on this laptop only'));
 });
 

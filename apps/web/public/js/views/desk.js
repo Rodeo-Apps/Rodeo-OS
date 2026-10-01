@@ -61,10 +61,11 @@ export function deskPanel(rodeoId, { source, onChange } = {}) {
   const box = h('div', { class: 'card noprint' }, h('p', { class: 'muted small' }, 'Checking this browser…'));
 
   async function draw() {
-    const [pk, status, rows] = await Promise.all([
+    const [pk, status, rows, desk] = await Promise.all([
       offline.packet(rodeoId),
       offline.downloadStatus(rodeoId),
       offline.queued(rodeoId),
+      offline.deskName(),
     ]);
     const waiting = rows.filter((r) => r.state === 'queued');
     const refused = rows.filter((r) => r.state === 'rejected');
@@ -87,6 +88,8 @@ export function deskPanel(rodeoId, { source, onChange } = {}) {
       : null;
 
     box.replaceChildren(
+      h('div', { class: 'small' }, h('strong', {}, `This browser: ${desk}`),
+        h('span', { class: 'muted' }, '  — its own packet and its own queue.')),
       packetLine,
       failedLine,
       waiting.length
