@@ -75,7 +75,7 @@ export const PERMISSIONS = {
   'score.correct': ['owner', 'admin', 'secretary'],
   'score.dq': ['owner', 'admin', 'secretary', 'judge'],
   'payout.calculate': ['owner', 'admin', 'secretary'],
-  'payout.disburse': ['owner', 'admin'],
+  'payout.disburse': ['owner', 'admin', 'secretary'],
   'financial.view': ['owner', 'admin', 'secretary'],
   'stock.manage': ['owner', 'admin', 'secretary', 'stock_contractor'],
   'waiver.manage': ['owner', 'admin', 'secretary'],

@@ -24,11 +24,13 @@ const url = process.env.TEST_DATABASE_URL;
 describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' }, () => {
   let db: Database;
   let app: Awaited<ReturnType<typeof buildApp>>;
-  let plainApp: Awaited<ReturnType<typeof buildApp>>;
+  let judgeApp: Awaited<ReturnType<typeof buildApp>>;
 
   const org = randomUUID();
   const auth = randomUUID();
   const sec = randomUUID();
+  const judgeAuth = randomUUID();
+  const judge = randomUUID();
   const rodeo = randomUUID();
   const scoringConfig = randomUUID();
   const payoutConfig = randomUUID();
@@ -38,8 +40,9 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
   const evCheck = randomUUID(); // judge card against timer sheet
   const evPay = randomUUID(); // finalize then cash
   const evMismatch = randomUUID(); // an envelope that is not the server's
+  const evCash = randomUUID(); // the secretary pays the envelopes, the judge cannot
 
-  const people = Array.from({ length: 16 }, () => randomUUID());
+  const people = Array.from({ length: 18 }, () => randomUUID());
   const entries: Record<string, { id: string; contestant: string; event: string }> = {};
 
   // Performance 1 starts in two days: enough notice for a turnout told now.
@@ -66,16 +69,17 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
 
   const headers = { authorization: 'Bearer test' };
 
-  function verifier(permissions: string[]) {
+  // No hand-granted permissions anywhere: the role is the check.
+  function verifier(role: 'secretary' | 'judge') {
     return {
       verify: async () => ({
-        sub: auth,
+        sub: role === 'secretary' ? auth : judgeAuth,
         exp: 9e9,
         iat: 0,
-        email: 'sam@example.com',
+        email: role === 'secretary' ? 'sam@example.com' : 'jed@example.com',
         app_metadata: {
-          user_id: sec,
-          org_memberships: [{ org_id: org, role: 'secretary', permissions }],
+          user_id: role === 'secretary' ? sec : judge,
+          org_memberships: [{ org_id: org, role, permissions: [] }],
         },
       }),
     } as never;
@@ -157,19 +161,23 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
       add('pay2', evPay, 1, 2),
       add('mis1', evMismatch, 1, 1),
       add('mis2', evMismatch, 1, 2),
+      add('cash1', evCash, 1, 1),
+      add('cash2', evCash, 1, 2),
     ];
 
     await db.asService('offline desk sync fixture', async (tx) => {
       await tx`insert into organizations (id, name, slug, type)
                values (${org}, 'Desk Co', ${'desk-' + org.slice(0, 8)}, 'producer')`;
       await tx`insert into users (id, first_name, last_name, supabase_auth_id)
-               values (${sec}, 'Sam', 'Secretary', ${auth})`;
+               values (${sec}, 'Sam', 'Secretary', ${auth}),
+                      (${judge}, 'Jed', 'Judgely', ${judgeAuth})`;
       for (let i = 0; i < people.length; i++) {
         await tx`insert into users (id, first_name, last_name)
                  values (${people[i]}, ${'Roper'}, ${'Number ' + (i + 1)})`;
       }
       await tx`insert into org_members (org_id, user_id, role, accepted_at)
-               values (${org}, ${sec}, 'secretary', now())`;
+               values (${org}, ${sec}, 'secretary', now()),
+                      (${org}, ${judge}, 'judge', now())`;
       await tx`insert into scoring_configs (id, org_id, name, is_system, config)
                values (${scoringConfig}, ${org}, 'Desk Timed', false,
                        ${tx.json(TIMED as unknown as Record<string, unknown>)})`;
@@ -182,8 +190,8 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
       await tx`insert into performances (org_id, rodeo_id, performance_number, name, scheduled_start)
                values (${org}, ${rodeo}, 1, 'Friday', ${perf1At.toISOString()}),
                       (${org}, ${rodeo}, 2, 'Saturday', ${perf2At.toISOString()})`;
-      const types = ['breakaway_roping', 'steer_wrestling', 'goat_tying', 'chute_dogging'];
-      for (const [i, ev] of [evScore, evCheck, evPay, evMismatch].entries()) {
+      const types = ['breakaway_roping', 'steer_wrestling', 'goat_tying', 'chute_dogging', 'barrel_racing'];
+      for (const [i, ev] of [evScore, evCheck, evPay, evMismatch, evCash].entries()) {
         await tx`insert into rodeo_events (id, org_id, rodeo_id, event_type, scoring_mode,
                                            entry_fee, added_money, scoring_config_id,
                                            payout_config_id, sort_order)
@@ -209,15 +217,15 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
                        'secretary', ${scoringConfig})`;
     });
 
-    // She is the secretary; the producer has granted her the cash box.
-    app = await buildApp({ db, logger: false, verifier: verifier(['payout.disburse']) });
-    // The same secretary without that grant.
-    plainApp = await buildApp({ db, logger: false, verifier: verifier([]) });
+    // She is the secretary, and nothing more: no hand-granted permissions.
+    app = await buildApp({ db, logger: false, verifier: verifier('secretary') });
+    // A judge, who scores but does not pay.
+    judgeApp = await buildApp({ db, logger: false, verifier: verifier('judge') });
   });
 
   after(async () => {
     if (app) await app.close();
-    if (plainApp) await plainApp.close();
+    if (judgeApp) await judgeApp.close();
     if (!db) return;
     await db.raw.begin(async (tx) => {
       await tx`set local session_replication_role = 'replica'`;
@@ -232,7 +240,7 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
       await tx`delete from scoring_configs where org_id = ${org}`;
       await tx`delete from payout_configs where org_id = ${org}`;
       await tx`delete from org_members where org_id = ${org}`;
-      await tx`delete from users where id in ${tx([sec, ...people])}`;
+      await tx`delete from users where id in ${tx([sec, judge, ...people])}`;
       await tx`delete from organizations where id = ${org}`;
     });
     await db.close();
@@ -478,15 +486,63 @@ describe('offline desk sync', { skip: url ? false : 'TEST_DATABASE_URL not set' 
     assert.equal(paid.length, 0);
   });
 
-  it('cash needs its own permission; without it only that change is refused', async () => {
-    const turn = {
-      id: randomUUID(), entity_type: 'cash', action: 'create', timestamp: ts(),
+  it('a secretary with no extra grant settles a cash envelope; a judge cannot', async () => {
+    // Scored and made official by the secretary.
+    const s1 = scoreChange('cash1', 15.5, 15.5);
+    const s2 = scoreChange('cash2', 16.25, 16.25);
+    const finalize = {
+      id: randomUUID(), entity_type: 'finalize', action: 'create', timestamp: ts(),
       source: 'secretary',
-      data: { rodeo_id: rodeo, rodeo_event_id: evPay, confirm: true, envelope_total_cents: 1 },
+      data: { rodeo_id: rodeo, rodeo_event_id: evCash, official: true, confirm: true },
     };
-    const out = await sync([turn], plainApp);
-    assert.equal(out.accepted.length, 0);
-    assert.match(out.rejected[0].explanation, /payout\.disburse/);
+    assert.deepEqual((await sync([s1, s2, finalize])).accepted, [s1.id, s2.id, finalize.id]);
+
+    const ledger = () => db.raw<{ n: number; total: string | null }[]>`
+      select count(*)::int as n, sum(amount) as total from financial_transactions
+       where org_id = ${org} and idempotency_key like ${'disburse-' + evCash + ':%'}
+    `;
+    const path = `/v1/orgs/${org}/rodeos/${rodeo}/events/${evCash}/pay-cash`;
+
+    // The judge: refused at the live route, and refused in the queue — that
+    // one change only.
+    const judgeLive = await judgeApp.inject({ method: 'POST', url: path, headers, payload: { confirm: true } });
+    assert.equal(judgeLive.statusCode, 403);
+    assert.equal(JSON.parse(judgeLive.body).error.code, 'FORBIDDEN');
+
+    const judgeCash = {
+      id: randomUUID(), entity_type: 'cash', action: 'create', timestamp: ts(),
+      source: 'judge',
+      data: { rodeo_id: rodeo, rodeo_event_id: evCash, confirm: true, envelope_total_cents: 1 },
+    };
+    const judgeScore = scoreChange('cash1', 15.5, 15.5);
+    const judgeOut = await sync([judgeCash, judgeScore], judgeApp);
+    const refused = judgeOut.rejected.find((r) => r.client_change_id === judgeCash.id)!;
+    assert.match(refused.explanation, /Role 'judge' may not perform 'payout\.disburse'/);
+    assert.ok(
+      !judgeOut.rejected.some((r) => r.explanation.includes('payout.disburse') && r.client_change_id !== judgeCash.id),
+      'only the cash change is refused for permission',
+    );
+    assert.equal((await ledger())[0].n, 0, 'the judge paid nobody');
+
+    // The secretary, role only: the envelopes are paid and settled as cash.
+    const res = await app.inject({ method: 'POST', url: path, headers, payload: { confirm: true } });
+    assert.equal(res.statusCode, 200, res.body);
+    const paid = JSON.parse(res.body).data;
+    assert.equal(paid.kind, 'paid');
+    assert.ok(paid.total_cents > 0);
+
+    const [row] = await ledger();
+    assert.ok(row.n > 0);
+    assert.equal(Math.round(Number(row.total) * 100), paid.total_cents);
+    const statuses = await db.raw<{ to_status: string }[]>`
+      select distinct on (e.transaction_id) e.to_status
+        from transaction_status_events e
+        join financial_transactions t on t.id = e.transaction_id
+       where t.idempotency_key like ${'disburse-' + evCash + ':%'}
+       order by e.transaction_id, e.created_at desc, e.id desc
+    `;
+    assert.ok(statuses.length > 0 && statuses.every((s) => s.to_status === 'completed'),
+      'settled as cash on the spot');
   });
 
   it('a turnout is classified by the time she recorded it, and applies once', async () => {
