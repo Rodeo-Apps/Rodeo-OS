@@ -157,9 +157,13 @@ export async function settleTransaction(
     );
   }
 
+  // clock_timestamp(), not the column default now(): now() is the start of
+  // the TRANSACTION, so a payout disbursed and settled in one transaction (the
+  // cash envelope) would leave 'pending' and 'completed' with the same time and
+  // "latest status" decided by a random uuid.
   await tx`
     insert into transaction_status_events
-      (org_id, transaction_id, from_status, to_status, reason, actor_id)
+      (org_id, transaction_id, from_status, to_status, reason, actor_id, created_at)
     values
       (${input.org_id}, ${input.transaction_id}, ${from}, ${input.to_status},
        ${
@@ -167,7 +171,7 @@ export async function settleTransaction(
            .filter(Boolean)
            .join(' — ') || null
        },
-       ${input.actor_id})
+       ${input.actor_id}, clock_timestamp())
   `;
 
   return {

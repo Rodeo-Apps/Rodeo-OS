@@ -11,15 +11,12 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
-import {
-  calculateJudgedScore,
-  calculateTimedScore,
-  type ScoringConfig,
-} from '@rodeo-os/engine';
+import type { CrossCheck } from '@rodeo-os/engine';
 
 import { requirePermission } from '../../core/auth.ts';
 import { claimsFor } from '../../core/database/client.ts';
 import * as repo from '../../core/database/repositories.ts';
+import { scoreRun } from '../../core/desk-actions.ts';
 
 interface SubmitScoreBody {
   entry_id: string;
@@ -28,7 +25,7 @@ interface SubmitScoreBody {
   performance?: number;
   animal_id?: string;
   scoring_config_id: string;
-  source?: 'manual' | 'timer_hardware' | 'web_serial' | 'timer_bridge' | 'import';
+  source?: 'manual' | 'timer_hardware' | 'web_serial' | 'timer_bridge' | 'import' | 'secretary';
   hardware_timestamp?: number;
 
   // judged
@@ -46,7 +43,45 @@ interface SubmitScoreBody {
   tie_held_seconds?: number;
 
   dq_triggers?: string[];
+
+  /** The judge card (timed) or the total she typed (judged). */
+  cross_check?: CrossCheck;
 }
+
+/** The second piece of paper, as the screen sends it. */
+const crossCheckSchema = {
+  type: 'object',
+  required: ['kind'],
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', enum: ['timed', 'judged'] },
+    judge_card: {
+      type: 'object',
+      required: ['raw_time'],
+      additionalProperties: false,
+      properties: {
+        raw_time: { type: ['number', 'null'], minimum: 0, maximum: 3600 },
+        penalties: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['type'],
+            additionalProperties: false,
+            properties: {
+              type: { type: 'string', maxLength: 48 },
+              count: { type: 'integer', minimum: 1, maximum: 10 },
+            },
+          },
+        },
+        barrels_knocked: { type: 'integer', minimum: 0, maximum: 3 },
+        dq_triggers: { type: 'array', items: { type: 'string', maxLength: 64 } },
+      },
+    },
+    typed_total: { type: ['number', 'null'], minimum: 0, maximum: 200 },
+    marked_out: { type: 'boolean' },
+    dq_triggers: { type: 'array', items: { type: 'string', maxLength: 64 } },
+  },
+} as const;
 
 const submitScoreSchema = {
   body: {
@@ -62,7 +97,7 @@ const submitScoreSchema = {
       scoring_config_id: { type: 'string', format: 'uuid' },
       source: {
         type: 'string',
-        enum: ['manual', 'timer_hardware', 'web_serial', 'timer_bridge', 'import'],
+        enum: ['manual', 'timer_hardware', 'web_serial', 'timer_bridge', 'import', 'secretary'],
         default: 'manual',
       },
       hardware_timestamp: { type: 'integer' },
@@ -111,6 +146,7 @@ const submitScoreSchema = {
         type: 'array',
         items: { type: 'string', maxLength: 64 },
       },
+      cross_check: crossCheckSchema,
     },
   },
 } as const;
@@ -119,9 +155,14 @@ export const registerScoringModule: FastifyPluginAsync = async (fastify) => {
   /**
    * POST /v1/orgs/:org_id/rodeos/:rodeo_id/events/:event_id/scores
    *
-   * Calculates the score but stores it as `provisional`. Nothing becomes
-   * official until a secretary finalises it, because the arena regularly
-   * reverses a call between the run and the results going up.
+   * Calculates the score through the engine and stores what the engine says:
+   * a valid run lands `official`, a missed run `no_time`, a disqualified ride
+   * `dq`. What stops a wrong number reaching the public or an envelope is not
+   * the score's status but the event's: an event cannot be made official, or
+   * paid, until every run's judge card and timer sheet agree.
+   *
+   * The same scoreRun() call is what POST /sync uses for a score she typed
+   * with no signal.
    */
   fastify.post<{
     Params: { org_id: string; rodeo_id: string; event_id: string };
@@ -139,11 +180,20 @@ export const registerScoringModule: FastifyPluginAsync = async (fastify) => {
       // Every database call in this handler runs as the caller, so RLS is what
       // decides whether this config and this entry are theirs to touch.
       const claims = claimsFor(request.auth!);
+      const scoreId = crypto.randomUUID();
 
-      const config = await fastify.db.asUser(claims, (tx) =>
-        repo.loadScoringConfig(tx, body.scoring_config_id),
+      const out = await fastify.db.asUser(claims, (tx) =>
+        scoreRun(tx, {
+          org_id,
+          rodeo_id,
+          rodeo_event_id: event_id,
+          score_id: scoreId,
+          actor_id: request.auth!.user.user_id,
+          body,
+        }),
       );
-      if (!config) {
+
+      if (out.kind === 'no_config') {
         return reply.status(404).send({
           error: {
             code: 'SCORING_CONFIG_NOT_FOUND',
@@ -153,61 +203,18 @@ export const registerScoringModule: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const result =
-        config.mode === 'judged'
-          ? calculateJudgedScore(
-              {
-                judges: body.judges ?? [],
-                marked_out: body.marked_out,
-                dq_triggers: body.dq_triggers,
-              },
-              config,
-            )
-          : calculateTimedScore(
-              {
-                raw_time: body.raw_time ?? null,
-                penalties: body.penalties,
-                barrels_knocked: body.barrels_knocked,
-                tie_held_seconds: body.tie_held_seconds,
-                source: body.source,
-                dq_triggers: body.dq_triggers,
-              },
-              config,
-            );
-
-      if (!result.valid) {
+      if (out.kind === 'invalid') {
         return reply.status(422).send({
           error: {
             code: 'SCORE_VALIDATION_FAILED',
             message: 'The submitted score is not valid for this event.',
-            details: { issues: result.issues },
+            details: { issues: out.issues },
           },
           meta: { request_id: request.id },
         });
       }
 
-      const scoreId = crypto.randomUUID();
-
-      // Persistence is the storage layer's job; this module hands it a value
-      // object it has already validated.
-      await fastify.db.asUser(claims, (tx) =>
-        repo.persistScore(tx, {
-          id: scoreId,
-          org_id,
-          rodeo_id,
-          rodeo_event_id: event_id,
-          entry_id: body.entry_id,
-          contestant_id: body.contestant_id,
-          go_round: body.go_round ?? 1,
-          performance: body.performance,
-          animal_id: body.animal_id,
-          scoring_config_id: body.scoring_config_id,
-          source: body.source ?? 'manual',
-          hardware_timestamp: body.hardware_timestamp,
-          entered_by: request.auth!.user.user_id,
-          result,
-        }),
-      );
+      const result = out.result;
 
       fastify.eventBus.emit('score.submitted', {
         org_id,

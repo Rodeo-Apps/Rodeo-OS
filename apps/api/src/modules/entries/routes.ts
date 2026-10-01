@@ -17,7 +17,6 @@ import type { FastifyPluginAsync } from 'fastify';
 import {
   checkDivisionEligibility,
   checkEntryEligibility,
-  classifyTurnout,
   quoteEntryFees,
   type DivisionConfig,
 } from '@rodeo-os/engine';
@@ -25,7 +24,8 @@ import {
 import { requirePermission } from '../../core/auth.ts';
 import { claimsFor } from '../../core/database/client.ts';
 import * as entriesRepo from '../../core/database/entries-repo.ts';
-import { recordEntryPayment, refundEntry } from '../../core/settlement.ts';
+import { recordTurnout, tradeRuns } from '../../core/desk-actions.ts';
+import { recordEntryPayment } from '../../core/settlement.ts';
 
 interface EnterBody {
   contestant_id: string;
@@ -318,37 +318,21 @@ export const registerEntriesModule: FastifyPluginAsync = async (fastify) => {
     },
     async (request, reply) => {
       const { org_id, entry_id } = request.params;
+      // When she was told. Absent means now — she is being told at the desk.
       const notifiedAt = request.body.notified_at ?? new Date().toISOString();
 
-      const verdict = classifyTurnout({
-        notified_at: notifiedAt,
-        performance_at: request.body.performance_at,
-        release_type: request.body.release_type,
-      });
-
-      const out = await fastify.db.asUser(claimsFor(request.auth!), async (tx) => {
-        const ok = await entriesRepo.scratchEntry(tx, {
+      const out = await fastify.db.asUser(claimsFor(request.auth!), (tx) =>
+        recordTurnout(tx, {
           org_id,
           entry_id,
-          status: verdict.status,
           release_type: request.body.release_type,
+          performance_at: request.body.performance_at,
           notified_at: notifiedAt,
-        });
-        if (!ok) return null;
+          actor_id: request.auth!.user.user_id,
+        }),
+      );
 
-        const refund = verdict.refund_due
-          ? await refundEntry(tx, {
-              org_id,
-              entry_id,
-              reason: `${verdict.status}: ${request.body.release_type}`,
-              actor_id: request.auth!.user.user_id,
-            })
-          : { refunded_cents: 0, rows: 0 };
-
-        return { verdict, refund };
-      });
-
-      if (!out) {
+      if (out.kind === 'not_live') {
         return reply.status(404).send({
           error: {
             code: 'ENTRY_NOT_TURNOUTABLE',
@@ -364,10 +348,95 @@ export const registerEntriesModule: FastifyPluginAsync = async (fastify) => {
         reason: request.body.release_type,
       });
 
+      return reply.send({
+        data: { verdict: out.verdict, refund: out.refund },
+        meta: { request_id: request.id },
+      });
+    },
+  );
+
+  /**
+   * POST .../events/:event_id/trade
+   *
+   * Two contestants trade runs, in the same performance or across
+   * performances of the same event. Each takes the other's slot; no position
+   * is created. The drawn animal stays with the contestant, so the witnessed
+   * stock draw is untouched. `expect` is where she saw them: if they have
+   * moved since, the trade is refused (409) rather than applied blind.
+   */
+  fastify.post<{
+    Params: { org_id: string; rodeo_id: string; event_id: string };
+    Body: {
+      a_entry_id: string;
+      b_entry_id: string;
+      expect?: {
+        a: { performance_number: number | null; draw_position: number };
+        b: { performance_number: number | null; draw_position: number };
+      };
+    };
+  }>(
+    '/rodeos/:rodeo_id/events/:event_id/trade',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['a_entry_id', 'b_entry_id'],
+          additionalProperties: false,
+          properties: {
+            a_entry_id: { type: 'string', format: 'uuid' },
+            b_entry_id: { type: 'string', format: 'uuid' },
+            expect: {
+              type: 'object',
+              required: ['a', 'b'],
+              additionalProperties: false,
+              properties: {
+                a: slotSchema,
+                b: slotSchema,
+              },
+            },
+          },
+        },
+      },
+      preHandler: requirePermission('entry.manage'),
+    },
+    async (request, reply) => {
+      const { org_id, event_id } = request.params;
+      const out = await fastify.db.asUser(claimsFor(request.auth!), (tx) =>
+        tradeRuns(tx, {
+          org_id,
+          rodeo_event_id: event_id,
+          a_entry_id: request.body.a_entry_id,
+          b_entry_id: request.body.b_entry_id,
+          expect: request.body.expect,
+        }),
+      );
+
+      if (out.kind === 'refused') {
+        return reply.status(422).send({
+          error: { code: 'TRADE_REFUSED', message: out.message },
+          meta: { request_id: request.id },
+        });
+      }
+      if (out.kind === 'stale') {
+        return reply.status(409).send({
+          error: { code: 'TRADE_STALE', message: out.message, details: out.current },
+          meta: { request_id: request.id },
+        });
+      }
       return reply.send({ data: out, meta: { request_id: request.id } });
     },
   );
 };
+
+const slotSchema = {
+  type: 'object',
+  required: ['draw_position'],
+  additionalProperties: false,
+  properties: {
+    performance_number: { type: ['integer', 'null'], minimum: 1 },
+    draw_position: { type: 'integer', minimum: 1 },
+  },
+} as const;
 
 // ---------------------------------------------------------------------------
 

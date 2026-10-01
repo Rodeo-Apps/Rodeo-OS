@@ -26,6 +26,14 @@ export {
 export { calculateJudgedScore } from './scoring/judged.ts';
 export { calculateTimedScore } from './scoring/timed.ts';
 export { rankResults, tieGroups } from './scoring/rank.ts';
+export { compareJudgedTotal, compareTimedCard } from './scoring/crosscheck.ts';
+export type {
+  CrossCheck,
+  CrossCheckCode,
+  CrossCheckResult,
+  JudgeCardTime,
+  StoredTimedRun,
+} from './scoring/crosscheck.ts';
 export {
   aggregatesToRankable,
   assignDDivisions,

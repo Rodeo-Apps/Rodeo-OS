@@ -48,16 +48,31 @@ export function clearSession() {
   localStorage.removeItem('rodeo.org');
 }
 
-async function request(method, path, body, asText = false) {
+/**
+ * A dying arena wifi rarely fails fast: the request hangs. Desk writes give up
+ * after DESK_TIMEOUT_MS so the change can go to the offline queue and Enter
+ * still moves to the next run.
+ */
+const DESK_TIMEOUT_MS = 8000;
+
+async function request(method, path, body, asText = false, timeoutMs = 0) {
   const url = `${config.api_origin}/v1/orgs/${orgId}${path}`;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      ...(body ? { 'content-type': 'application/json' } : {}),
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const controller = timeoutMs ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        ...(body ? { 'content-type': 'application/json' } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 
   if (asText) {
     if (!res.ok) throw new ApiError(res.status, 'HTTP_ERROR', await res.text());
@@ -119,7 +134,9 @@ export const api = {
   enter: (rodeoId, eventId, body) =>
     request('POST', `/rodeos/${rodeoId}/events/${eventId}/entries`, body),
   turnout: (rodeoId, entryId, body) =>
-    request('POST', `/rodeos/${rodeoId}/entries/${entryId}/turnout`, body),
+    request('POST', `/rodeos/${rodeoId}/entries/${entryId}/turnout`, body, false, DESK_TIMEOUT_MS),
+  trade: (rodeoId, eventId, body) =>
+    request('POST', `/rodeos/${rodeoId}/events/${eventId}/trade`, body, false, DESK_TIMEOUT_MS),
 
   backNumbers: (rodeoId) => request('GET', `/rodeos/${rodeoId}/back-numbers`),
   assignBackNumbers: (rodeoId, start) =>
@@ -152,9 +169,21 @@ export const api = {
 
   createRegistryAnimal: (body) => request('POST', '/registry', body),
 
-  submitScore: (eventId, body) => request('POST', `/events/${eventId}/scores`, body),
-  finalize: (rodeoId, eventId, official) =>
-    request('POST', `/rodeos/${rodeoId}/events/${eventId}/finalize`, { official }),
+  submitScore: (rodeoId, eventId, body) =>
+    request('POST', `/rodeos/${rodeoId}/events/${eventId}/scores`, body, false, DESK_TIMEOUT_MS),
+  // `confirm`: she has compared every judge card with its timer sheet. The
+  // server refuses official without it.
+  finalize: (rodeoId, eventId, official, confirm = false) =>
+    request('POST', `/rodeos/${rodeoId}/events/${eventId}/finalize`,
+      official ? { official, confirm } : { official }, false, DESK_TIMEOUT_MS),
+  // The winner envelopes: calculate, disburse and settle as cash, server side.
+  payCash: (rodeoId, eventId, body) =>
+    request('POST', `/rodeos/${rodeoId}/events/${eventId}/pay-cash`,
+      { confirm: true, ...body }, false, DESK_TIMEOUT_MS),
+
+  // ---- Offline desk -------------------------------------------------------
+  offlinePacket: (rodeoId) => request('GET', `/rodeos/${rodeoId}/offline-packet`),
+  sync: (body) => request('POST', '/sync', body),
 
   // ---- Corrections --------------------------------------------------------
   scoreSheet: (rodeoId, eventId) =>

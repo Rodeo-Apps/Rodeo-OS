@@ -1084,10 +1084,18 @@ export interface RodeoDetail extends RodeoSummary {
     entry_fee: string;
     added_money: string;
     num_go_rounds: number;
+    /** What a score in this event is calculated with. The score route requires it. */
+    scoring_config_id: string | null;
     entries: number;
     scored: number;
   }[];
-  performances: { performance_number: number; name: string | null; performance_type: string }[];
+  performances: {
+    performance_number: number;
+    name: string | null;
+    performance_type: string;
+    /** When it starts, ISO. A turnout's notice is measured to this. */
+    performance_at: string | null;
+  }[];
 }
 
 export async function loadRodeo(
@@ -1101,7 +1109,7 @@ export async function loadRodeo(
   const events = await tx<RodeoDetail['events']>`
     select e.id, e.event_type, o.label, e.scoring_mode, e.is_roughstock,
            e.entry_fee::text as entry_fee, e.added_money::text as added_money,
-           e.num_go_rounds,
+           e.num_go_rounds, e.scoring_config_id,
            (select count(*) from entries en
              where en.rodeo_event_id = e.id
                and en.status in ('confirmed','drawn','competed'))::int as entries,
@@ -1117,7 +1125,9 @@ export async function loadRodeo(
   `;
 
   const performances = await tx<RodeoDetail['performances']>`
-    select performance_number, name, performance_type
+    select performance_number, name, performance_type,
+           to_char(scheduled_start at time zone 'UTC',
+                   'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as performance_at
       from performances
      where org_id = ${orgId} and rodeo_id = ${rodeoId}
      order by performance_number

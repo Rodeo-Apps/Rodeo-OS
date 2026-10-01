@@ -1137,3 +1137,68 @@ migrations were verified against a dirty cluster, the routes were verified by
 typecheck rather than by being called, and the views were verified by
 `node --check` rather than by being rendered. A passing check on the wrong
 thing is worse than no check, because it stops anybody looking.
+
+---
+
+## D47 — The secretary screen could not score, and the offline desk · S1
+
+Found while building the offline desk (ROADMAP Phase 3, sync queue). Four faults,
+each behind a green check, and then the thing that was asked for.
+
+**A score typed on the secretary screen never reached the server.** Three
+separate ways. `scoring.js` posted to `/events/{rodeo}/events/{event}/scores`,
+a path that does not exist; the route is `/rodeos/:rodeo_id/events/:event_id/scores`.
+It never sent `scoring_config_id`, which the route requires (D34) — and
+`GET /rodeos/:id` did not return it, so the screen had nothing to send. And
+the day sheet runs it scored against carried no `entry_id`, so even a correct
+path would have been refused. Fixed in all three places; `DaySheetRun` gains
+`entry_id`, which the printed text never shows.
+
+**The secretary's authority was unstorable.** The sync authority model ranks
+her terminal at 30, but `scores.source` had no `'secretary'`, so her scores
+were stored as `'manual'` (10): a laptop coming back online outranked her own
+earlier scores, and two secretaries editing the same run never reached the
+`manual_required` rule written for exactly that. Migration 0030 adds it.
+
+**One bad change rolled back a whole weekend of sync.** The batch was one
+transaction with no savepoints, so an engine refusal or a constraint on any
+change 500'd every change. `applyChange` also never ran the engine — it stored
+the laptop's `final_time` as given, with no `scoring_config_id` — ignored
+`base_version`, and a create on a scored run collided with
+`idx_scores_one_live_per_entry`. Each change now runs in its own savepoint,
+is checked for its own permission, and goes through the same desk action as
+its live route (`apps/api/src/core/desk-actions.ts`).
+
+**Two status events in one transaction had no order.** `transaction_status_events`
+is ordered by `created_at`, which defaults to `now()` — the start of the
+transaction. Disbursing and settling an envelope in one transaction left
+`pending` and `completed` with the same time, and "latest status" was decided
+by a random uuid. Those inserts now stamp `clock_timestamp()`.
+
+**The route comment and the screen said scores land provisional.** They do
+not: the engine returns `official` for a valid run, and that is what is
+stored. Left as it is; the comments are corrected. What now stops a wrong
+number reaching an envelope is the event: it cannot be made official, or paid,
+until every run's judge card agrees with its timer sheet (timed: the stored
+timer-sheet time and penalties against the flag judge's card; judged: the
+total she typed against what the engine makes of the cards), and she confirms.
+The second piece of paper is `scores.cross_check` (migration 0030); the
+comparison is the engine's (`packages/engine/src/scoring/crosscheck.ts`).
+
+**Built:** a read-only rodeo packet (`GET /rodeos/:id/offline-packet`), stored
+in IndexedDB only when complete; a hand-written service worker for the app
+shell; the engine served to the browser with Node's own
+`module.stripTypeScriptTypes` (`apps/web/server.ts`); an offline queue for
+scores, turnouts, trades, Make official and cash envelopes, drained through
+`POST /sync`; the turnout and trade desk actions, live and queued; the day
+sheet and the payoff list printed from the packet.
+
+**Still true and not fixed here:** the API sends no CORS headers, so the
+secretary interface and the API must share an origin; a static host without
+`apps/web/server.ts` cannot serve the engine, so the offline payout needs that
+server; and the day sheet engine treats a `medical_release` entry as a live
+run (only `scratched`, `turned_out` and `no_show` are scratched) and flags
+`medical` but not `vet_release`.
+
+`supabase/migrations/0030_offline_desk.sql`, `apps/api/test/sync.test.ts`,
+`apps/web/test/offline.test.mjs`, `packages/engine/test/crosscheck.test.ts`

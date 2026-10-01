@@ -175,8 +175,11 @@ export async function correctionsView(rodeoId, eventId) {
       h('div', { class: 'actions noprint' },
         h('button', {
           onclick: async () => {
+            // Official again: the server checks every judge card against its
+            // timer sheet, and needs her word that she compared them.
+            if (!confirm('Have the judge cards and timer sheets been compared for every run?')) return;
             try {
-              await api.finalize(rodeoId, event.id, true);
+              await api.finalize(rodeoId, event.id, true, true);
               toast('Re-finalised. Placings and payouts have moved.');
             } catch (err) { toast(err.message, true); }
           },

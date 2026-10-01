@@ -19,6 +19,7 @@
  */
 
 import type { Json, Tx } from './client.ts';
+import * as desk from '../desk-actions.ts';
 import type {
   Entryish,
   PayoutConfig,
@@ -154,6 +155,8 @@ export interface PersistScoreInput {
   source: string;
   hardware_timestamp?: number;
   entered_by: string;
+  /** The judge card or typed total this run is checked against. */
+  cross_check?: unknown | null;
   result: {
     kind: 'judged' | 'timed';
     status: string;
@@ -179,7 +182,7 @@ export async function persistScore(tx: Tx, input: PersistScoreInput): Promise<vo
       raw_time, time_penalties, final_time,
       judge_scores, final_score, animal_score,
       status, dq_reason, source, hardware_timestamp,
-      scoring_config_id, entered_by
+      scoring_config_id, entered_by, cross_check
     ) values (
       ${input.id}, ${input.org_id}, ${input.rodeo_id}, ${input.rodeo_event_id},
       ${input.entry_id}, ${input.contestant_id},
@@ -192,8 +195,161 @@ export async function persistScore(tx: Tx, input: PersistScoreInput): Promise<vo
       ${judged ? (r.animal_score ?? null) : null},
       ${r.status}, ${r.dq_reason ?? null}, ${input.source},
       ${input.hardware_timestamp ?? null},
-      ${input.scoring_config_id}, ${input.entered_by}
+      ${input.scoring_config_id}, ${input.entered_by},
+      ${input.cross_check ? tx.json(input.cross_check as Json) : null}
     )
+  `;
+}
+
+/**
+ * Supersede the live score for a run with a newly computed one, in place.
+ *
+ * Used when sync decides an incoming score outranks the stored one (a
+ * secretary's reading over a manual entry, a clean edit of the version she
+ * was looking at). A second row would collide with
+ * idx_scores_one_live_per_entry; correcting the row keeps one live score and
+ * lets the edit-history trigger record what it replaced.
+ */
+export async function replaceScore(
+  tx: Tx,
+  input: {
+    org_id: string;
+    score_id: string;
+    scoring_config_id: string;
+    source: string;
+    actor_id: string;
+    reason: string;
+    cross_check: unknown | null;
+    result: PersistScoreInput['result'];
+  },
+): Promise<void> {
+  const r = input.result;
+  const judged = r.kind === 'judged';
+  await tx`
+    update scores
+       set raw_time       = ${judged ? null : (r.raw_time ?? null)},
+           time_penalties = ${tx.json((judged ? [] : (r.penalties_applied ?? [])) as Json)},
+           final_time     = ${judged ? null : (r.final_time ?? null)},
+           judge_scores   = ${tx.json((judged ? (r.judge_scores ?? []) : []) as Json)},
+           final_score    = ${judged ? (r.final_score ?? null) : null},
+           animal_score   = ${judged ? (r.animal_score ?? null) : null},
+           status         = ${r.status},
+           dq_reason      = ${r.dq_reason ?? null},
+           source         = ${input.source},
+           scoring_config_id = ${input.scoring_config_id},
+           cross_check    = ${input.cross_check ? tx.json(input.cross_check as Json) : null},
+           correction_reason = ${input.reason},
+           last_edited_by = ${input.actor_id},
+           updated_at     = now()
+     where id = ${input.score_id}
+       and org_id = ${input.org_id}
+       and status in ('provisional', 'official', 'no_time')
+  `;
+}
+
+/** Every comparable run in an event, for the judge-card / timer-sheet gate. */
+export async function loadCrossCheckRows(
+  tx: Tx,
+  orgId: string,
+  eventId: string,
+): Promise<
+  {
+    id: string;
+    entry_id: string;
+    contestant_name: string;
+    go_round: number;
+    status: string;
+    raw_time: number | null;
+    time_penalties: unknown;
+    judge_scores: unknown;
+    cross_check: unknown;
+  }[]
+> {
+  const rows = await tx<
+    {
+      id: string;
+      entry_id: string;
+      contestant_name: string;
+      go_round: number;
+      status: string;
+      raw_time: string | null;
+      time_penalties: unknown;
+      judge_scores: unknown;
+      cross_check: unknown;
+    }[]
+  >`
+    select s.id, s.entry_id, s.go_round, s.status, s.raw_time,
+           s.time_penalties, s.judge_scores, s.cross_check,
+           trim(u.first_name || ' ' || u.last_name) as contestant_name
+      from scores s
+      join users u on u.id = s.contestant_id
+     where s.org_id = ${orgId}
+       and s.rodeo_event_id = ${eventId}
+       and s.status in ('provisional', 'official', 'no_time')
+     order by s.go_round, s.id
+  `;
+  return rows.map((r) => ({
+    ...r,
+    raw_time: r.raw_time === null ? null : Number(r.raw_time),
+  }));
+}
+
+/** Whether an event's results have been made official. */
+export async function eventResultsOfficial(
+  tx: Tx,
+  orgId: string,
+  eventId: string,
+): Promise<boolean> {
+  const [row] = await tx<{ ok: boolean }[]>`
+    select exists (
+      select 1 from results
+       where org_id = ${orgId} and rodeo_event_id = ${eventId} and is_official
+    ) as ok
+  `;
+  return row?.ok ?? false;
+}
+
+// ===========================================================================
+// Trades
+// ===========================================================================
+
+export async function lockEntriesForTrade(
+  tx: Tx,
+  orgId: string,
+  entryIds: string[],
+): Promise<
+  {
+    id: string;
+    rodeo_event_id: string;
+    go_round_number: number;
+    performance_number: number | null;
+    draw_position: number | null;
+    status: string;
+  }[]
+> {
+  // Ordered, so two trades touching the same pair lock in the same order.
+  return tx`
+    select id, rodeo_event_id, go_round_number, performance_number,
+           draw_position, status
+      from entries
+     where org_id = ${orgId} and id in ${tx(entryIds)}
+     order by id
+     for update
+  `;
+}
+
+export async function setDrawSlot(
+  tx: Tx,
+  orgId: string,
+  entryId: string,
+  slot: { performance_number: number | null; draw_position: number },
+): Promise<void> {
+  await tx`
+    update entries
+       set performance_number = ${slot.performance_number},
+           draw_position      = ${slot.draw_position},
+           updated_at         = now()
+     where id = ${entryId} and org_id = ${orgId}
   `;
 }
 
@@ -463,11 +619,14 @@ export async function disburse(
       returning id
     `;
 
+    // clock_timestamp(): see settleTransaction(). A batch settled in the same
+    // transaction must still order its 'pending' before its 'completed'.
     await tx`
       insert into transaction_status_events
-        (org_id, transaction_id, from_status, to_status, reason, actor_id)
+        (org_id, transaction_id, from_status, to_status, reason, actor_id, created_at)
       values
-        (${orgId}, ${row.id}, null, 'pending', 'payout batch created', ${actorId})
+        (${orgId}, ${row.id}, null, 'pending', 'payout batch created', ${actorId},
+         clock_timestamp())
     `;
 
     written++;
@@ -520,7 +679,7 @@ export async function loadServerState(
        where org_id = ${orgId}
          and entry_id = ${entryId}
          and go_round = ${goRound}
-         and status in ('provisional', 'official')
+         and status in ('provisional', 'official', 'no_time')
        limit 1
     `;
     return row ?? null;
@@ -535,9 +694,56 @@ export async function loadServerState(
     return row ?? null;
   }
 
+  if (change.entity_type === 'turnout') {
+    const entryId = change.data.entry_id as string | undefined;
+    if (!entryId) return null;
+    const [row] = await tx<
+      {
+        id: string;
+        status: string;
+        release_type: string | null;
+        turnout_notified_at: string | null;
+        updated_at: string;
+      }[]
+    >`
+      select id, status, release_type, updated_at,
+             to_char(turnout_notified_at at time zone 'UTC',
+                     'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as turnout_notified_at
+        from entries
+       where org_id = ${orgId} and id = ${entryId}
+    `;
+    return row ?? null;
+  }
+
   return null;
 }
 
+/** What happened when a change the authority rule let through was applied. */
+export type ApplyOutcome =
+  | { applied: true }
+  | {
+      applied: false;
+      reason: 'validation_error' | 'desk_rule';
+      resolution: 'server_wins' | 'manual_required';
+      explanation: string;
+      server_version?: Record<string, unknown>;
+    };
+
+const refuse = (
+  explanation: string,
+  resolution: 'server_wins' | 'manual_required' = 'server_wins',
+  reason: 'validation_error' | 'desk_rule' = 'validation_error',
+  server_version?: Record<string, unknown>,
+): ApplyOutcome => ({ applied: false, reason, resolution, explanation, server_version });
+
+/**
+ * Apply one offline change, through the same desk action the live route calls.
+ *
+ * `serverState` is what loadServerState found and the authority rule already
+ * looked at; for a score it names the live row an incoming score supersedes.
+ * A refusal here is a refusal of THIS change only — the caller runs each
+ * change in its own savepoint.
+ */
 export async function applyChange(
   tx: Tx,
   orgId: string,
@@ -546,44 +752,162 @@ export async function applyChange(
     entity_type: string;
     action: string;
     data: Record<string, unknown>;
+    timestamp: string;
+    source?: string;
   },
   actorId: string,
-): Promise<void> {
-  if (change.entity_type !== 'score') return;
-
+  serverState: ServerState | null = null,
+): Promise<ApplyOutcome> {
   const d = change.data;
 
-  if (change.action === 'create') {
-    await tx`
-      insert into scores (
-        id, org_id, rodeo_id, rodeo_event_id, entry_id, contestant_id,
-        go_round, raw_time, final_time, final_score, status, source, entered_by
-      ) values (
-        ${change.id}, ${orgId}, ${d.rodeo_id as string},
-        ${d.rodeo_event_id as string}, ${d.entry_id as string},
-        ${d.contestant_id as string}, ${(d.go_round as number) ?? 1},
-        ${(d.raw_time as number) ?? null}, ${(d.final_time as number) ?? null},
-        ${(d.final_score as number) ?? null},
-        ${(d.status as string) ?? 'provisional'},
-        ${(d.source as string) ?? 'manual'}, ${actorId}
-      )
-      on conflict (id) do nothing
-    `;
-    return;
+  if (change.entity_type === 'score') {
+    const out = await desk.scoreRun(tx, {
+      org_id: orgId,
+      rodeo_id: d.rodeo_id as string,
+      rodeo_event_id: d.rodeo_event_id as string,
+      score_id: change.id,
+      actor_id: actorId,
+      body: { ...(d as unknown as desk.RunSubmission), source: storedSource(change) },
+      replace: serverState?.id as string | undefined,
+      reason: 'offline score from the secretary\'s desk',
+    });
+    if (out.kind === 'no_config') return refuse('No such scoring config.');
+    if (out.kind === 'invalid') {
+      return refuse(
+        'The engine refused this score: ' + out.issues.map((i) => i.message).join(' '),
+      );
+    }
+    return { applied: true };
   }
 
-  await tx`
-    update scores
-       set final_time  = coalesce(${(d.final_time as number) ?? null}, final_time),
-           final_score = coalesce(${(d.final_score as number) ?? null}, final_score),
-           status      = coalesce(${(d.status as string) ?? null}, status),
-           source      = coalesce(${(d.source as string) ?? null}, source),
-           last_edited_by = ${actorId}
-     where org_id = ${orgId}
-       and entry_id = ${d.entry_id as string}
-       and go_round = ${(d.go_round as number) ?? 1}
-       and status in ('provisional', 'official')
-  `;
+  if (change.entity_type === 'turnout') {
+    const out = await desk.recordTurnout(tx, {
+      org_id: orgId,
+      entry_id: d.entry_id as string,
+      release_type: d.release_type as string,
+      performance_at: d.performance_at as string,
+      // When she was told, recorded on the laptop at the time.
+      notified_at: (d.notified_at as string | undefined) ?? change.timestamp,
+      actor_id: actorId,
+    });
+    if (out.kind === 'not_live') return refuse('No live entry with that id.');
+    return { applied: true };
+  }
+
+  if (change.entity_type === 'trade') {
+    const a = d.a as { entry_id: string; performance_number: number | null; draw_position: number };
+    const b = d.b as { entry_id: string; performance_number: number | null; draw_position: number };
+    const out = await desk.tradeRuns(tx, {
+      org_id: orgId,
+      rodeo_event_id: d.rodeo_event_id as string,
+      a_entry_id: a?.entry_id,
+      b_entry_id: b?.entry_id,
+      expect: {
+        a: { performance_number: a?.performance_number ?? null, draw_position: a?.draw_position },
+        b: { performance_number: b?.performance_number ?? null, draw_position: b?.draw_position },
+      },
+    });
+    if (out.kind === 'refused') return refuse(out.message);
+    if (out.kind === 'stale') {
+      return refuse(out.message, 'manual_required', 'desk_rule', out.current as never);
+    }
+    return { applied: true };
+  }
+
+  if (change.entity_type === 'finalize') {
+    const out = await desk.finalizeEvent(tx, {
+      org_id: orgId,
+      rodeo_event_id: d.rodeo_event_id as string,
+      official: d.official === true,
+      confirm: d.confirm === true,
+    });
+    switch (out.kind) {
+      case 'ok':
+        return { applied: true };
+      case 'not_found':
+        return refuse('No such event.');
+      case 'no_scores':
+        return refuse('Nothing has been scored in this event yet.', 'manual_required', 'desk_rule');
+      case 'unconfirmed':
+        return refuse(
+          'Official needs her confirmation that the judge cards and timer sheets were compared.',
+          'manual_required',
+          'desk_rule',
+        );
+      case 'blocked':
+        return refuse(out.message, 'manual_required', 'desk_rule', {
+          blockers: out.blockers,
+        });
+      case 'failed':
+        return refuse(
+          'Results could not be computed: ' + out.issues.map((i) => i.message).join(' '),
+          'manual_required',
+          'desk_rule',
+        );
+    }
+  }
+
+  if (change.entity_type === 'cash') {
+    const out = await desk.payEnvelope(tx, {
+      org_id: orgId,
+      rodeo_id: d.rodeo_id as string,
+      rodeo_event_id: d.rodeo_event_id as string,
+      actor_id: actorId,
+      confirm: d.confirm === true,
+      payment_method: 'cash',
+      reference: 'cash envelope, recorded offline',
+      claim: {
+        envelope_total_cents: Number(d.envelope_total_cents),
+        lines: d.lines as { contestant_id: string; amount_cents: number }[] | undefined,
+      },
+    });
+    switch (out.kind) {
+      case 'paid':
+        return { applied: true };
+      case 'not_found':
+        return refuse('No such event, or it has no payout config.');
+      case 'mismatch':
+        return refuse(out.message, 'manual_required', 'desk_rule', {
+          server_total_cents: out.server_total_cents,
+          envelope_total_cents: out.envelope_total_cents,
+          server_lines: out.server_lines,
+        });
+      case 'blocked':
+        return refuse(out.message, 'manual_required', 'desk_rule', { blockers: out.blockers });
+      case 'not_official':
+        return refuse(out.message, 'manual_required', 'desk_rule');
+      case 'unconfirmed':
+        return refuse('Paying an envelope needs her confirmation.', 'manual_required', 'desk_rule');
+      case 'failed':
+        return refuse(
+          'The payout could not be calculated: ' + out.issues.map((i) => i.message).join(' '),
+          'manual_required',
+          'desk_rule',
+        );
+      case 'unreconciled':
+        return refuse('The payout did not reconcile on the server; nothing was paid.');
+    }
+  }
+
+  // Entries and results are never written from a device: the authority rule
+  // rejects them before they get here.
+  return refuse(`'${change.entity_type}' is not applied from a device.`);
+}
+
+/**
+ * The value stored in scores.source. The device's own provenance wins when it
+ * is a source the column accepts (a hardware reading relayed by the laptop is
+ * still a hardware reading); otherwise it is who sent it.
+ */
+const STORED_SOURCES = new Set([
+  'manual', 'timer_hardware', 'web_serial', 'import', 'timer_bridge', 'secretary',
+]);
+function storedSource(change: { data: Record<string, unknown>; source?: string }): string {
+  const own = change.data.source as string | undefined;
+  if (own && STORED_SOURCES.has(own)) return own;
+  if (change.source === 'secretary') return 'secretary';
+  if (change.source === 'timer') return 'timer_bridge';
+  return 'manual';
 }
 
 export async function changesSince(

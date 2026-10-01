@@ -213,6 +213,14 @@ export function isUuid(value: string): boolean {
   return UUID_RE.test(value);
 }
 
+/** Whether the caller holds a permission, by explicit grant or by role. */
+export function hasPermission(auth: RequestAuth, permission: Permission): boolean {
+  return (
+    (auth.org.permissions?.includes(permission) ?? false) ||
+    roleGrants(auth.org.role, permission)
+  );
+}
+
 /**
  * Route-level guard. Use as a preHandler after authMiddleware.
  *

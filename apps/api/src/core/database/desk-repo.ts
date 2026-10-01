@@ -304,6 +304,9 @@ export interface EntryListRow {
   fees_paid: boolean;
   score_status: string | null;
   notes: string | null;
+  /** Why they turned out, and when she was told — what decides the fine. */
+  release_type: string | null;
+  turnout_notified_at: string | null;
 }
 
 export async function listEntries(
@@ -334,7 +337,10 @@ export async function listEntries(
         where s.entry_id = en.id and s.go_round = en.go_round_number
         order by case s.status when 'official' then 0 else 1 end
         limit 1) as score_status,
-      en.notes
+      en.notes,
+      en.release_type,
+      to_char(en.turnout_notified_at at time zone 'UTC',
+              'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as turnout_notified_at
     from entries en
     join rodeo_events ev on ev.id = en.rodeo_event_id
     join users u on u.id = en.contestant_id

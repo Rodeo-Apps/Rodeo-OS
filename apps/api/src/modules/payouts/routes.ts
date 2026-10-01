@@ -11,17 +11,16 @@
 
 import type { FastifyPluginAsync } from 'fastify';
 
-import {
-  calculateMultiRoundPayout,
-  calculatePayout,
-  formatCents,
-  type PayoutConfig,
-  type PayoutResult,
-} from '@rodeo-os/engine';
+import { formatCents } from '@rodeo-os/engine';
 
 import { requirePermission } from '../../core/auth.ts';
 import { claimsFor } from '../../core/database/client.ts';
 import * as repo from '../../core/database/repositories.ts';
+import {
+  calculateEventPayout,
+  crossCheckBlockers,
+  payEnvelope,
+} from '../../core/desk-actions.ts';
 import { SettlementError, settleBatch } from '../../core/settlement.ts';
 
 export const registerPayoutsModule: FastifyPluginAsync = async (fastify) => {
@@ -69,31 +68,14 @@ export const registerPayoutsModule: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const result: PayoutResult = ctx.config.go_round_average_split
-        ? calculateMultiRoundPayout({
-            payout_config: ctx.config,
-            scoring_mode: ctx.scoring_mode,
-            entries: ctx.entries,
-            added_money_cents: ctx.added_money_cents,
-            entry_fee_cents: ctx.entry_fee_cents,
-            results_by_round: ctx.results_by_round,
-            average_results: ctx.average_results,
-          })
-        : calculatePayout({
-            payout_config: ctx.config,
-            scoring_mode: ctx.scoring_mode,
-            entries: ctx.entries,
-            added_money_cents: ctx.added_money_cents,
-            entry_fee_cents: ctx.entry_fee_cents,
-            results: ctx.results,
-          });
+      const calc = calculateEventPayout(ctx);
 
-      if (!result.ok) {
+      if (calc.kind === 'failed') {
         return reply.status(422).send({
           error: {
             code: 'PAYOUT_CALCULATION_FAILED',
             message: 'The payout could not be calculated.',
-            details: { issues: result.issues },
+            details: { issues: calc.issues },
           },
           meta: { request_id: request.id },
         });
@@ -102,13 +84,8 @@ export const registerPayoutsModule: FastifyPluginAsync = async (fastify) => {
       // A reconciliation failure here is a bug, not a user error. Refuse to
       // return numbers that do not add up rather than let a producer disburse
       // them. §7.4 tracks this with a target of zero.
-      const disbursed = result.payouts.reduce((s, p) => s + p.amount_cents, 0);
-      const accounted = disbursed + result.unpaid_cents + result.escrow_cents;
-      if (accounted !== result.net_purse_cents) {
-        request.log.error(
-          { org_id, event_id, accounted, net: result.net_purse_cents },
-          'payout does not reconcile',
-        );
+      if (calc.kind !== 'ok') {
+        request.log.error({ org_id, event_id, calc }, 'payout does not reconcile');
         return reply.status(500).send({
           error: {
             code: 'PAYOUT_DOES_NOT_RECONCILE',
@@ -117,6 +94,7 @@ export const registerPayoutsModule: FastifyPluginAsync = async (fastify) => {
           meta: { request_id: request.id },
         });
       }
+      const result = calc.result;
 
       fastify.eventBus.emit('payout.calculated', {
         org_id,
@@ -188,46 +166,40 @@ export const registerPayoutsModule: FastifyPluginAsync = async (fastify) => {
         });
       }
 
-      const calculated = ctx.config.go_round_average_split
-        ? calculateMultiRoundPayout({
-            payout_config: ctx.config,
-            scoring_mode: ctx.scoring_mode,
-            entries: ctx.entries,
-            added_money_cents: ctx.added_money_cents,
-            entry_fee_cents: ctx.entry_fee_cents,
-            results_by_round: ctx.results_by_round,
-            average_results: ctx.average_results,
-          })
-        : calculatePayout({
-            payout_config: ctx.config,
-            scoring_mode: ctx.scoring_mode,
-            entries: ctx.entries,
-            added_money_cents: ctx.added_money_cents,
-            entry_fee_cents: ctx.entry_fee_cents,
-            results: ctx.results,
-          });
-
-      if (!calculated.ok) {
+      const calc = calculateEventPayout(ctx);
+      if (calc.kind === 'failed') {
         return reply.status(422).send({
           error: {
             code: 'PAYOUT_CALCULATION_FAILED',
             message: 'The payout could not be calculated; nothing was disbursed.',
-            details: { issues: calculated.issues },
+            details: { issues: calc.issues },
           },
           meta: { request_id: request.id },
         });
       }
-
-      const disbursed = calculated.payouts.reduce((s, p) => s + p.amount_cents, 0);
-      if (
-        disbursed + calculated.unpaid_cents + calculated.escrow_cents !==
-        calculated.net_purse_cents
-      ) {
+      if (calc.kind !== 'ok') {
         request.log.error({ org_id, rodeo_id }, 'payout does not reconcile');
         return reply.status(500).send({
           error: {
             code: 'PAYOUT_DOES_NOT_RECONCILE',
             message: 'Internal reconciliation failed; nothing was written.',
+          },
+          meta: { request_id: request.id },
+        });
+      }
+      const calculated = calc.result;
+
+      // Nobody is paid off one record: every run's judge card has to agree
+      // with its timer sheet first.
+      const blockers = await fastify.db.asUser(claims, (tx) =>
+        crossCheckBlockers(tx, org_id, request.body.rodeo_event_id),
+      );
+      if (blockers && blockers.length > 0) {
+        return reply.status(409).send({
+          error: {
+            code: 'CARDS_DISAGREE',
+            message: `${blockers.length} run(s) where the judge card and the timer sheet do not agree.`,
+            details: { blockers },
           },
           meta: { request_id: request.id },
         });
@@ -329,6 +301,120 @@ export const registerPayoutsModule: FastifyPluginAsync = async (fastify) => {
         }
         throw err;
       }
+    },
+  );
+
+  /**
+   * POST .../events/:event_id/pay-cash
+   *
+   * The winner envelopes. Calculates on the server, writes the ledger and
+   * settles it as cash in one step — at a jackpot the money leaves the cash
+   * box the moment the event is official, and there is no processor to wait
+   * for. The same payEnvelope() call is what POST /sync uses for envelopes she
+   * filled with no signal.
+   *
+   * Refused (409) until every run's judge card agrees with its timer sheet
+   * and the event is official. If she sends what she counted, a total that is
+   * not the server's is refused rather than paid.
+   */
+  fastify.post<{
+    Params: { org_id: string; rodeo_id: string; event_id: string };
+    Body: {
+      confirm: boolean;
+      envelope_total_cents?: number;
+      lines?: { contestant_id: string; amount_cents: number }[];
+      reference?: string;
+    };
+  }>(
+    '/rodeos/:rodeo_id/events/:event_id/pay-cash',
+    {
+      schema: {
+        body: {
+          type: 'object',
+          required: ['confirm'],
+          additionalProperties: false,
+          properties: {
+            confirm: { type: 'boolean', const: true },
+            envelope_total_cents: { type: 'integer', minimum: 0 },
+            lines: {
+              type: 'array',
+              maxItems: 500,
+              items: {
+                type: 'object',
+                required: ['contestant_id', 'amount_cents'],
+                additionalProperties: false,
+                properties: {
+                  contestant_id: { type: 'string', format: 'uuid' },
+                  amount_cents: { type: 'integer', minimum: 0 },
+                },
+              },
+            },
+            reference: { type: 'string', maxLength: 200 },
+          },
+        },
+      },
+      preHandler: requirePermission('payout.disburse'),
+    },
+    async (request, reply) => {
+      const { org_id, rodeo_id, event_id } = request.params;
+      const body = request.body;
+
+      const out = await fastify.db.asUser(claimsFor(request.auth!), (tx) =>
+        payEnvelope(tx, {
+          org_id,
+          rodeo_id,
+          rodeo_event_id: event_id,
+          actor_id: request.auth!.user.user_id,
+          confirm: body.confirm,
+          payment_method: 'cash',
+          reference: body.reference,
+          claim:
+            body.envelope_total_cents === undefined
+              ? undefined
+              : { envelope_total_cents: body.envelope_total_cents, lines: body.lines },
+        }),
+      );
+
+      const fail = (status: number, code: string, message: string, details?: unknown) =>
+        reply.status(status).send({
+          error: { code, message, ...(details ? { details } : {}) },
+          meta: { request_id: request.id },
+        });
+
+      switch (out.kind) {
+        case 'not_found':
+          return fail(404, 'PAYOUT_CONTEXT_NOT_FOUND', 'No such event, or it has no payout config.');
+        case 'unconfirmed':
+          return fail(400, 'CONFIRM_REQUIRED', 'Confirm before paying the envelopes.');
+        case 'blocked':
+          return fail(409, 'CARDS_DISAGREE', out.message, { blockers: out.blockers });
+        case 'not_official':
+          return fail(409, 'NOT_OFFICIAL', out.message);
+        case 'mismatch':
+          return fail(409, 'ENVELOPE_MISMATCH', out.message, {
+            server_total_cents: out.server_total_cents,
+            envelope_total_cents: out.envelope_total_cents,
+            server_lines: out.server_lines,
+          });
+        case 'failed':
+          return fail(422, 'PAYOUT_CALCULATION_FAILED', 'The payout could not be calculated.', {
+            issues: out.issues,
+          });
+        case 'unreconciled':
+          return fail(500, 'PAYOUT_DOES_NOT_RECONCILE', 'Internal reconciliation failed; nothing was paid.');
+      }
+
+      if (!out.already_paid && out.total_cents > 0) {
+        fastify.eventBus.emit('payout.disbursed', {
+          org_id,
+          transaction_id: `disburse-${event_id}`,
+        });
+      }
+
+      return reply.send({
+        data: { ...out, display_total: formatCents(out.total_cents) },
+        meta: { request_id: request.id },
+      });
     },
   );
 };

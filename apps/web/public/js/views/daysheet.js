@@ -15,7 +15,10 @@
  */
 
 import { api } from '../api.js';
+import * as offline from '../offline.js';
+import { engine, localSheet, nightState } from '../night.js';
 import { crumbs, h, render, showPrint, toast } from '../ui.js';
+import { deskPanel } from './desk.js';
 
 const FLAG_LABEL = {
   turned_out: 'TURNED OUT',
@@ -26,8 +29,36 @@ const FLAG_LABEL = {
   slack: 'SLACK',
 };
 
+/**
+ * The sheet from the stored packet. If she has turned somebody out or traded
+ * a run since it was downloaded, the engine re-renders it with that applied,
+ * in the same text format; otherwise it is the packet's own text, unchanged.
+ */
+async function sheetFromPacket(rodeoId, perf) {
+  const pk = await offline.packet(rodeoId);
+  if (!pk) return null;
+  const entry = pk.day_sheets.find((s) => s.performance_number === perf)
+    ?? pk.day_sheets.find((s) => s.performance_number === null);
+  const state = nightState(pk, await offline.queued(rodeoId));
+  const local = localSheet(state, entry.performance_number);
+  return {
+    rodeo: pk.rodeo,
+    sheet: local ?? entry.sheet,
+    text: local ? engine.renderDaySheetText(local) : entry.text,
+  };
+}
+
 export async function daySheetView(rodeoId, performance) {
-  const rodeo = await api.rodeo(rodeoId);
+  let rodeo;
+  let fromPacket = null;
+  try {
+    rodeo = await api.rodeo(rodeoId);
+  } catch (err) {
+    if (!offline.isUnreachable(err)) throw err;
+    fromPacket = await sheetFromPacket(rodeoId, performance ?? null);
+    if (!fromPacket) throw new Error('No signal, and this rodeo was never downloaded onto this browser.');
+    rodeo = fromPacket.rodeo;
+  }
   crumbs(
     { label: 'Rodeos', href: '#/' },
     { label: rodeo.name, href: `#/rodeo/${rodeoId}` },
@@ -36,7 +67,18 @@ export async function daySheetView(rodeoId, performance) {
   showPrint(() => window.print());
 
   const perf = performance ?? (rodeo.performances[0]?.performance_number ?? null);
-  const sheet = await api.daySheet(rodeoId, perf);
+  if (!fromPacket) {
+    try {
+      fromPacket = { sheet: await api.daySheet(rodeoId, perf), text: null, live: true };
+    } catch (err) {
+      if (!offline.isUnreachable(err)) throw err;
+      fromPacket = await sheetFromPacket(rodeoId, perf);
+      if (!fromPacket) throw err;
+    }
+  } else if (perf !== (performance ?? null)) {
+    fromPacket = await sheetFromPacket(rodeoId, perf);
+  }
+  const sheet = fromPacket.sheet;
 
   const picker = h('div', { class: 'actions noprint' },
     rodeo.performances.map((p) =>
@@ -52,7 +94,18 @@ export async function daySheetView(rodeoId, performance) {
       class: 'ghost',
       onclick: async () => {
         try {
-          const text = await api.daySheetText(rodeoId, perf);
+          // No signal: the packet's text — the same format the server prints.
+          let text = fromPacket.text;
+          if (fromPacket.live) {
+            try {
+              text = await api.daySheetText(rodeoId, perf);
+            } catch (err) {
+              // The wifi went after the page loaded: print the packet's copy.
+              if (!offline.isUnreachable(err)) throw err;
+              text = (await sheetFromPacket(rodeoId, perf))?.text;
+              if (!text) throw err;
+            }
+          }
           const w = window.open('', '_blank');
           if (!w) return toast('Allow pop-ups to open the plain-text sheet.', true);
           // Plain text in a <pre> — what a cheap arena printer handles best.
@@ -133,6 +186,7 @@ export async function daySheetView(rodeoId, performance) {
                 p.carded ? '' : ' — not carded'}`).join('   '))
         : null,
 
+      deskPanel(rodeoId, { source: fromPacket.live ? 'server' : 'copy' }),
       picker,
 
       sections.length

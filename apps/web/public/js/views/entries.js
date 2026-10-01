@@ -21,16 +21,75 @@
  */
 
 import { api } from '../api.js';
+import * as offline from '../offline.js';
+import { engine, nightState } from '../night.js';
 import { crumbs, h, money, render, showPrint, toast } from '../ui.js';
+import { deskPanel, notOnServer } from './desk.js';
 
-const OUT = new Set(['scratched', 'turned_out', 'no_show']);
+const OUT = new Set(['scratched', 'turned_out', 'no_show', 'medical_release']);
+
+/** The release reasons the database accepts, if no packet has brought the org's own list. */
+const RELEASE_REASONS = [
+  { code: 'medical', label: 'Medical Release' },
+  { code: 'vet_release', label: 'Veterinary Release' },
+  { code: 'stock_issue', label: 'Stock Issue' },
+  { code: 'weather', label: 'Weather' },
+  { code: 'personal', label: 'Personal' },
+  { code: 'travel', label: 'Travel' },
+  { code: 'no_notice', label: 'No Notice Given' },
+];
+
+/** The books from the stored packet, with what she has done since laid over it. */
+function entriesFromPacket(packet, queue) {
+  const state = nightState(packet, queue);
+  const label = new Map(packet.events.map((e) => [e.id, e.label ?? e.event_type.replace(/_/g, ' ')]));
+  return [...state.entries.values()].map((e) => ({
+    ...e,
+    event_label: label.get(e.rodeo_event_id),
+    horse_name: null,
+  }));
+}
+
+/**
+ * Whether a turnout carries a fine. The fine is shown as owed; collecting it
+ * is entry-fee money, which this screen does not take offline.
+ */
+function turnoutVerdict(row, rodeo) {
+  if (row.turnout) return row.turnout;
+  if (row.status !== 'turned_out' && row.status !== 'medical_release') return null;
+  const perf = rodeo.performances.find((p) => p.performance_number === row.performance_number);
+  if (!row.turnout_notified_at || !perf?.performance_at || !row.release_type) return null;
+  return engine.classifyTurnout({
+    notified_at: row.turnout_notified_at,
+    performance_at: perf.performance_at,
+    release_type: row.release_type,
+  });
+}
 
 export async function entriesView(rodeoId) {
   showPrint(() => window.print());
-  const [rodeo, entries] = await Promise.all([
-    api.rodeo(rodeoId),
-    api.entries(rodeoId),
-  ]);
+  let rodeo;
+  let entries;
+  let source = 'server';
+  const stored = await offline.packet(rodeoId).catch(() => null);
+  try {
+    [rodeo, entries] = await Promise.all([api.rodeo(rodeoId), api.entries(rodeoId)]);
+    // Turnouts recorded on this laptop and not yet on the server.
+    const queue = await offline.queued(rodeoId);
+    if (stored && queue.length) {
+      const local = new Map(entriesFromPacket(stored, queue).map((e) => [e.entry_id, e]));
+      entries = entries.map((r) => {
+        const l = local.get(r.entry_id);
+        return l && l.on_server === false ? { ...r, ...l, horse_name: r.horse_name } : r;
+      });
+    }
+  } catch (err) {
+    if (!offline.isUnreachable(err) || !stored) throw err;
+    source = 'copy';
+    rodeo = stored.rodeo;
+    entries = entriesFromPacket(stored, await offline.queued(rodeoId));
+  }
+  const reasons = stored?.release_reasons?.length ? stored.release_reasons : RELEASE_REASONS;
 
   crumbs(
     { label: 'Rodeos', href: '#/' },
@@ -278,8 +337,67 @@ export async function entriesView(rodeoId) {
   const listBox = h('div');
 
   async function refreshList() {
-    const rows = await api.entries(rodeoId);
-    drawList(rows);
+    try {
+      drawList(await api.entries(rodeoId));
+    } catch (err) {
+      const pk = await offline.packet(rodeoId);
+      if (!offline.isUnreachable(err) || !pk) throw err;
+      drawList(entriesFromPacket(pk, await offline.queued(rodeoId)));
+    }
+  }
+
+  // ---- Turnout ------------------------------------------------------------
+
+  /**
+   * Record a turnout: the reason, and the time she was told. That time — not
+   * the time this reaches the server — is what decides whether it is fineable.
+   */
+  function turnoutForm(r, cell) {
+    const reason = h('select', { 'aria-label': 'Release reason' },
+      reasons.map((o) => h('option', { value: o.code }, o.label)));
+    const now = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000)
+      .toISOString().slice(0, 16);
+    const told = h('input', { type: 'datetime-local', value: now, 'aria-label': 'When she was told' });
+    cell.replaceChildren(
+      h('div', { class: 'small' }, 'Reason ', reason),
+      h('div', { class: 'small' }, 'Told at ', told),
+      h('button', {
+        onclick: async () => {
+          const perf = rodeo.performances.find((p) => p.performance_number === r.performance_number)
+            ?? (rodeo.performances.length === 1 ? rodeo.performances[0] : null);
+          if (!perf?.performance_at) {
+            return toast('This run has no performance start time, so the notice cannot be measured.', true);
+          }
+          const notifiedAt = new Date(told.value).toISOString();
+          const body = {
+            release_type: reason.value,
+            performance_at: perf.performance_at,
+            notified_at: notifiedAt,
+          };
+          try {
+            const out = await offline.record(rodeoId, {
+              live: () => api.turnout(rodeoId, r.entry_id, body),
+              change: {
+                entity_type: 'turnout',
+                data: { rodeo_id: rodeoId, entry_id: r.entry_id, ...body },
+                label: `Turnout — ${r.contestant_name}, ${r.event_label}`,
+              },
+            });
+            const verdict = out.where === 'server'
+              ? out.result.verdict
+              : engine.classifyTurnout({ ...body });
+            toast(
+              `${r.contestant_name}: ${verdict.status.replace(/_/g, ' ')}`
+              + (verdict.fineable ? ' — fine owed.' : '.')
+              + (out.where === 'server' ? '' : ' ON THIS LAPTOP ONLY — not on the server yet.'),
+              out.where !== 'server',
+            );
+          } catch (err) { toast(err.message, true); }
+          refreshList();
+        },
+      }, 'Record turnout'),
+      h('button', { class: 'ghost', onclick: () => refreshList() }, 'Cancel'),
+    );
   }
 
   function drawList(rows) {
@@ -313,19 +431,34 @@ export async function entriesView(rodeoId) {
                     h('td', {}, r.event_label),
                     h('td', {}, r.horse_name ?? ''),
                     h('td', {}, r.entry_fee_amount ? money(Math.round(Number(r.entry_fee_amount) * 100)) : ''),
-                    h('td', { class: 'flagcell noprint' },
-                      OUT.has(r.status)
-                        ? h('span', { class: 'pill' }, r.status.replace(/_/g, ' '))
-                        : h('button', {
-                            class: r.fees_paid ? 'ghost' : '',
-                            onclick: async () => {
-                              try {
-                                await api.patchEntry(rodeoId, r.entry_id, { fees_paid: !r.fees_paid });
-                                refreshList();
-                              } catch (err) { toast(err.message, true); }
-                            },
-                          }, r.fees_paid ? 'Paid' : 'Take payment'),
-                    ),
+                    h('td', { class: 'flagcell noprint' }, (() => {
+                      const cell = h('div');
+                      const verdict = turnoutVerdict(r, rodeo);
+                      if (OUT.has(r.status)) {
+                        cell.append(
+                          h('span', { class: 'pill' }, r.status.replace(/_/g, ' ')),
+                          verdict?.fineable ? h('span', { class: 'pill', style: 'border-color:var(--stop);color:var(--stop)' }, 'fine owed') : '',
+                          notOnServer(r) ?? '',
+                        );
+                        return cell;
+                      }
+                      cell.append(
+                        source === 'copy'
+                          // Who has paid, at a glance. Taking the money is not done offline.
+                          ? h('span', { class: r.fees_paid ? 'pill ok' : 'pill' }, r.fees_paid ? 'Paid' : 'Owes')
+                          : h('button', {
+                              class: r.fees_paid ? 'ghost' : '',
+                              onclick: async () => {
+                                try {
+                                  await api.patchEntry(rodeoId, r.entry_id, { fees_paid: !r.fees_paid });
+                                  refreshList();
+                                } catch (err) { toast(err.message, true); }
+                              },
+                            }, r.fees_paid ? 'Paid' : 'Take payment'),
+                        h('button', { class: 'ghost', onclick: () => turnoutForm(r, cell) }, 'Turnout'),
+                      );
+                      return cell;
+                    })()),
                   ),
                 ),
               ),
@@ -343,8 +476,13 @@ export async function entriesView(rodeoId) {
     h('div', {},
       h('h1', {}, 'Entries'),
       h('p', { class: 'muted' }, rodeo.name),
+      deskPanel(rodeoId, { source, onChange: () => refreshList() }),
 
-      h('div', { class: 'card noprint' },
+      source === 'copy'
+        ? h('div', { class: 'card noprint' },
+            h('p', { class: 'muted' },
+              'No signal. New entries are taken when the link is back; turnouts can be recorded below.'))
+        : h('div', { class: 'card noprint' },
         h('h2', { style: 'margin-top:0' }, 'Take an entry'),
         h('label', {}, 'Who',
           h('span', { class: 'hint' },
@@ -361,7 +499,7 @@ export async function entriesView(rodeoId) {
           h('button', { onclick: () => takeEntry(true) }, 'Enter — paid'),
           h('button', { class: 'ghost', onclick: () => takeEntry(false) }, 'Enter — owes'),
         ),
-      ),
+        ),
 
       h('div', { class: 'actions noprint' },
         h('button', {

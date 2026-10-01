@@ -7,7 +7,9 @@
  */
 
 import { api } from '../api.js';
+import * as offline from '../offline.js';
 import { crumbs, dateRange, h, render, showPrint, toast } from '../ui.js';
+import { deskPanel } from './desk.js';
 
 function stateLabel(rodeo) {
   if (rodeo.book_state === 'filed') return h('span', { class: 'pill ok' }, 'Filed');
@@ -74,10 +76,22 @@ export async function listView() {
 
 export async function rodeoView(id) {
   showPrint(null);
-  const [rodeo, books] = await Promise.all([
-    api.rodeo(id),
-    api.books(id).catch(() => null),
-  ]);
+  let rodeo;
+  let books = null;
+  let source = 'server';
+  try {
+    [rodeo, books] = await Promise.all([
+      api.rodeo(id),
+      api.books(id).catch(() => null),
+    ]);
+  } catch (err) {
+    // No signal: this rodeo's page from the copy on this browser, so she can
+    // still reach scoring, the entries, the payouts and the day sheet.
+    const pk = offline.isUnreachable(err) ? await offline.packet(id) : null;
+    if (!pk) throw err;
+    rodeo = pk.rodeo;
+    source = 'copy';
+  }
 
   crumbs({ label: 'Rodeos', href: '#/' }, { label: rodeo.name });
 
@@ -92,6 +106,8 @@ export async function rodeoView(id) {
          [rodeo.venue_city, rodeo.venue_state].filter(Boolean).join(', '),
          sanctioned ? rodeo.sanctioned_by.join(' · ') : 'Open — no sanctioning',
         ].filter(Boolean).join('  ·  ')),
+
+      deskPanel(id, { source }),
 
       h('div', { class: 'rows', style: 'margin-top:18px' },
         // In the order a rodeo actually happens.

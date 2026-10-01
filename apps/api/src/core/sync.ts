@@ -14,7 +14,16 @@
  * comparison would let a judge's stale tablet overwrite a hardware time.
  */
 
-export type SyncEntityType = 'score' | 'entry' | 'result';
+export type SyncEntityType =
+  | 'score'
+  | 'entry'
+  | 'result'
+  // What the secretary does at the desk during a performance. Each is applied
+  // through the same function the live route calls (core/desk-actions.ts).
+  | 'turnout'
+  | 'trade'
+  | 'finalize'
+  | 'cash';
 export type SyncAction = 'create' | 'update' | 'delete';
 export type SyncSource = 'secretary' | 'judge' | 'timer';
 
@@ -39,7 +48,12 @@ export interface SyncRequest {
 
 export interface SyncConflict {
   client_change_id: string;
-  reason: 'version_conflict' | 'authority_override' | 'validation_error';
+  /**
+   * `desk_rule`: the authority rule let the change through, and a rule of the
+   * desk refused it — the judge card and timer sheet disagree, the envelope
+   * total is not the server's, the runs being traded have moved.
+   */
+  reason: 'version_conflict' | 'authority_override' | 'validation_error' | 'desk_rule';
   server_version: Record<string, unknown>;
   resolution: 'server_wins' | 'client_wins' | 'manual_required';
   explanation: string;
@@ -74,7 +88,7 @@ export interface Resolution {
 }
 
 /** Authority ranking. Higher wins. */
-const AUTHORITY: Record<string, number> = {
+export const AUTHORITY: Record<string, number> = {
   timer_hardware: 40,
   timer_bridge: 40,
   web_serial: 35,
@@ -103,12 +117,34 @@ export function resolveConflict(
   change: SyncChange,
   serverState: ServerState | null,
 ): Resolution {
+  // A result is never accepted from a device, whether or not the server has
+  // one yet: results are derived from scores on the server.
+  if (change.entity_type === 'result') {
+    return {
+      winner: 'server',
+      reason: 'derived_entity',
+      explanation:
+        'Results are recalculated from scores; an offline edit to a result ' +
+        'is discarded and the standings are recomputed.',
+    };
+  }
+
   // Nothing on the server: the client's create stands.
   if (!serverState) {
     return {
       winner: 'client',
       reason: 'no_server_record',
       explanation: 'The server has no record of this entity yet.',
+    };
+  }
+
+  // A retried sync. The change id is the score's id, so a row with this id is
+  // this very change, already applied: accept it and write nothing.
+  if (change.entity_type === 'score' && serverState.id === change.id) {
+    return {
+      winner: 'client',
+      reason: 'already_applied',
+      explanation: 'This score was already applied by an earlier sync.',
     };
   }
 
@@ -173,14 +209,50 @@ export function resolveConflict(
     };
   }
 
-  // Results are derived, never authored offline: recompute them server-side.
-  if (change.entity_type === 'result') {
+  // A turnout changes the entry, so it may only land on an entry that is
+  // still live. The same turnout arriving twice is accepted once.
+  if (change.entity_type === 'turnout') {
+    const live = ['pending', 'confirmed', 'drawn'].includes(String(serverState.status));
+    if (live) {
+      return {
+        winner: 'client',
+        reason: 'entry_still_live',
+        explanation: 'The entry is still live; the turnout applies.',
+      };
+    }
+    const notified = change.data.notified_at ?? change.timestamp;
+    if (
+      ['turned_out', 'medical_release'].includes(String(serverState.status)) &&
+      serverState.release_type === change.data.release_type &&
+      sameInstant(serverState.turnout_notified_at, notified)
+    ) {
+      return {
+        winner: 'client',
+        reason: 'already_applied',
+        explanation: 'This turnout was already applied by an earlier sync.',
+      };
+    }
     return {
       winner: 'server',
-      reason: 'derived_entity',
-      explanation:
-        'Results are recalculated from scores; an offline edit to a result ' +
-        'is discarded and the standings are recomputed.',
+      reason: 'entry_not_live',
+      explanation: `The entry is already ${String(serverState.status).replace(/_/g, ' ')} on the server.`,
+    };
+  }
+
+  // Trade, finalize and cash carry no stored version of their own to compare.
+  // They are desk actions, decided by the desk's own rules when they are
+  // applied: a trade checks the runs are where she saw them, finalize checks
+  // the judge cards against the timer sheets, and cash recalculates the payout
+  // on the server and compares it with her envelopes.
+  if (
+    change.entity_type === 'trade' ||
+    change.entity_type === 'finalize' ||
+    change.entity_type === 'cash'
+  ) {
+    return {
+      winner: 'client',
+      reason: 'desk_action',
+      explanation: 'Applied through the desk action, which checks its own rules.',
     };
   }
 
@@ -189,6 +261,12 @@ export function resolveConflict(
     reason: 'no_clear_authority',
     explanation: 'No authority rule covers this change.',
   };
+}
+
+function sameInstant(a: unknown, b: unknown): boolean {
+  const x = Date.parse(String(a ?? ''));
+  const y = Date.parse(String(b ?? ''));
+  return Number.isFinite(x) && x === y;
 }
 
 /** Turn a losing resolution into the conflict record the client receives. */

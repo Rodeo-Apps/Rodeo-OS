@@ -8,6 +8,7 @@
  */
 
 import { api, init, session, setSession, clearSession } from './api.js';
+import { startAutoSync } from './offline.js';
 import { crumbs, h, render, showPrint, toast } from './ui.js';
 
 const routes = [
@@ -148,6 +149,14 @@ async function route() {
 }
 
 window.addEventListener('hashchange', route);
+
+// The app itself is kept by a hand-written service worker so a refresh with
+// no signal still opens it; the rodeo's data is the packet, in IndexedDB.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+// Whatever is queued on this laptop goes to the server when the link is back.
+startAutoSync();
 
 await init();
 const org = session().orgId;
