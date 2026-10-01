@@ -26,6 +26,7 @@ const FLAG_LABEL = {
   no_show: 'NO SHOW',
   reride_pending: 'RE-RIDE',
   medical_release: 'MEDICAL',
+  vet_release: 'VET RELEASE',
   slack: 'SLACK',
 };
 
@@ -137,7 +138,10 @@ export async function daySheetView(rodeoId, performance) {
                   .filter(Boolean).join(' ')
               : run.horse_name ?? ''),
           h('td', { class: 'flagcell' },
-            run.flags.map((f) => FLAG_LABEL[f] ?? f).join(' · ')),
+            // A release with no flag of its own (stock issue, weather) shows
+            // its stored reason, as the printed sheet does.
+            [...run.flags.map((f) => FLAG_LABEL[f] ?? f), engine.releaseNote({ release_type: null, ...run })]
+              .filter(Boolean).join(' · ')),
         ),
       );
       const drag = dragAfter.get(run.position);

@@ -99,7 +99,7 @@ export type {
   SubscriptionPricing,
 } from './pricing/engine.ts';
 
-export { buildDaySheet, dragMarks, renderDaySheetText } from './daysheet/engine.ts';
+export { buildDaySheet, dragMarks, releaseNote, renderDaySheetText } from './daysheet/engine.ts';
 export type {
   DaySheet,
   DaySheetEntry,

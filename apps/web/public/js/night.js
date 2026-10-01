@@ -404,7 +404,8 @@ export const isLive = (e) => LIVE.has(e.status);
 
 // The day sheet engine's own rules (packages/engine/src/daysheet/engine.ts),
 // so a sheet re-rendered on the laptop reads exactly like the server's.
-const SCRATCHED = new Set(['scratched', 'turned_out', 'no_show']);
+const SCRATCHED = new Set(['scratched', 'turned_out', 'no_show', 'medical_release']);
+const OUT_FLAGS = ['turned_out', 'scratched', 'no_show', 'medical_release', 'vet_release'];
 
 /**
  * A packet day sheet with what she has done since applied: a turnout marks
@@ -447,13 +448,26 @@ export function localSheet(state, performanceNumber) {
       const status = entry?.status;
       const scratched = status ? SCRATCHED.has(status) : run.is_scratched;
       if (!scratched) position += 1;
-      const flags = run.flags.filter((f) => !['turned_out', 'scratched', 'no_show', 'medical_release'].includes(f));
+      const flags = run.flags.filter((f) => !OUT_FLAGS.includes(f));
       if (status === 'turned_out') flags.unshift('turned_out');
       if (status === 'scratched') flags.unshift('scratched');
       if (status === 'no_show') flags.unshift('no_show');
-      if ((entry?.release_type ?? null) === 'medical') flags.push('medical_release');
-      return { ...run, position: scratched ? 0 : position, is_scratched: scratched, flags };
+      const releaseType = entry ? (entry.release_type ?? null) : (run.release_type ?? null);
+      if (releaseType === 'medical') flags.push('medical_release');
+      if (releaseType === 'vet_release') flags.push('vet_release');
+      return {
+        ...run,
+        position: scratched ? 0 : position,
+        is_scratched: scratched,
+        flags,
+        release_type: releaseType,
+      };
     });
+    // Drags are counted over live runs only, by the engine's own rule. A packet
+    // from before sections carried their interval keeps its marks.
+    if (sec.drag_every !== undefined) {
+      sec.drags = engine.dragMarks(position, sec.drag_every, sec.condensed_drag ?? false);
+    }
     sec.live_count = position;
     sec.entered_count = sec.runs.length;
     total += position;

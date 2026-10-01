@@ -1196,9 +1196,23 @@ sheet and the payoff list printed from the packet.
 **Still true and not fixed here:** the API sends no CORS headers, so the
 secretary interface and the API must share an origin; a static host without
 `apps/web/server.ts` cannot serve the engine, so the offline payout needs that
-server; and the day sheet engine treats a `medical_release` entry as a live
-run (only `scratched`, `turned_out` and `no_show` are scratched) and flags
-`medical` but not `vet_release`.
+server.
+
+**Fixed since: a release printed as a live run.** `classifyTurnout` stores the
+status `medical_release` for every excused reason — `medical`, `vet_release`,
+`stock_issue`, `weather` — and `recordTurnout` keeps the reason in
+`release_type`. The day sheet engine scratched only `scratched`, `turned_out`
+and `no_show`, so a released contestant printed with a running number, counted
+in the "up" total and moved every drag after him; and only `medical` had a
+flag. Now `medical_release` is scratched — position 0, `--` on the paper, out
+of the live count, and drags counted over live runs only — in the engine and in
+the offline copy (`localSheet` in `apps/web/public/js/night.js`, which now
+recounts its drags with the engine's `dragMarks`). A vet release flags
+`vet_release` beside `medical_release` and prints `VET RELEASE`; a stock issue
+or weather release has no flag of its own and prints its stored reason
+(`STOCK ISSUE`, `WEATHER`) rather than a blank note. The scoring screen no
+longer offers a released run to score. Test `a medical or vet release is out`
+in `packages/engine/test/daysheet.test.ts`.
 
 `supabase/migrations/0030_offline_desk.sql`, `apps/api/test/sync.test.ts`,
 `apps/web/test/offline.test.mjs`, `packages/engine/test/crosscheck.test.ts`

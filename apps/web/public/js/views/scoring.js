@@ -29,7 +29,8 @@ import {
 import { crumbs, h, render, showPrint, toast } from '../ui.js';
 import { deskPanel, loadNight, notOnServer } from './desk.js';
 
-const OUT = new Set(['scratched', 'turned_out', 'no_show']);
+// A release means he is not running: nothing to score.
+const OUT = new Set(['scratched', 'turned_out', 'no_show', 'medical_release']);
 
 /** The run she pressed Trade on, kept across a redraw of the screen. */
 let trading = null;

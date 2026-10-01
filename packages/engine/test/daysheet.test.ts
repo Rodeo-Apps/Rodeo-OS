@@ -130,6 +130,82 @@ describe('day sheet', () => {
     assert.equal(sheet.sections[0].entered_count, 3);
   });
 
+  it('a medical or vet release is out: no running number, not live, and no drag moves', () => {
+    // classifyTurnout stores 'medical_release' for every excused reason.
+    const names = ['One', 'Medic', 'Two', 'Vet', 'Three', 'Four', 'Five', 'Six'];
+    const sheet = buildDaySheet(
+      input({
+        events: [barrels],
+        entries: names.map((name, i) =>
+          entry({
+            entry_id: `e${i}`,
+            contestant_name: name,
+            draw_position: i + 1,
+            ...(name === 'Medic' ? { status: 'medical_release', release_type: 'medical' } : {}),
+            ...(name === 'Vet' ? { status: 'medical_release', release_type: 'vet_release' } : {}),
+          }),
+        ),
+      }),
+    );
+    const section = sheet.sections[0];
+    const run = (n: string) => section.runs.find((r) => r.contestant_name === n)!;
+
+    for (const out of ['Medic', 'Vet']) {
+      assert.equal(run(out).is_scratched, true, `${out} is out`);
+      assert.equal(run(out).position, 0, `${out} takes no running number`);
+    }
+    assert.deepEqual(run('Medic').flags, ['medical_release']);
+    assert.deepEqual(run('Vet').flags, ['vet_release']);
+
+    // Still entered: the numbers count past the releases.
+    assert.equal(run('One').position, 1);
+    assert.equal(run('Two').position, 2);
+    assert.equal(run('Six').position, 6);
+
+    assert.equal(section.live_count, 6, 'eight entered, six running');
+    assert.equal(sheet.total_runs, 6);
+    // Drag every 5 LIVE runs: after Five, the fifth one running — not after
+    // the fifth line on the paper.
+    assert.deepEqual(section.drags, [{ after_position: 5, condensed: false }]);
+
+    const text = renderDaySheetText(sheet);
+    const lines = text.split('\n');
+    assert.match(lines.find((l) => l.includes('Vet'))!, /^--\s+Vet\s+VET RELEASE$/);
+    assert.match(lines.find((l) => l.includes('Medic'))!, /^--\s+Medic\s+MEDICAL RELEASE$/);
+    assert.match(lines.find((l) => l.includes('Two'))!, /^2\s+Two\s*$/);
+    const five = lines.findIndex((l) => l.includes('Five'));
+    assert.match(lines[five + 1], /drag/i, 'the drag falls after the fifth live run');
+    assert.match(text, /\(6 up\)/);
+  });
+
+  it('a stock issue or weather release is out too, and prints its stored reason', () => {
+    const sheet = buildDaySheet(
+      input({
+        events: [barrels],
+        entries: [
+          entry({ entry_id: 'a', contestant_name: 'Ran', draw_position: 1 }),
+          entry({
+            entry_id: 'b', contestant_name: 'Rained Out', draw_position: 2,
+            status: 'medical_release', release_type: 'weather',
+          }),
+          entry({
+            entry_id: 'c', contestant_name: 'Bad Steer', draw_position: 3,
+            status: 'medical_release', release_type: 'stock_issue',
+          }),
+          entry({ entry_id: 'd', contestant_name: 'Also Ran', draw_position: 4 }),
+        ],
+      }),
+    );
+    const runs = sheet.sections[0].runs;
+    assert.deepEqual(runs.map((r) => r.position), [1, 0, 0, 2]);
+    assert.deepEqual(runs[1].flags, [], 'no new flag type');
+    assert.equal(sheet.sections[0].live_count, 2);
+
+    const lines = renderDaySheetText(sheet).split('\n');
+    assert.match(lines.find((l) => l.includes('Rained Out'))!, /^--\s+Rained Out\s+WEATHER$/);
+    assert.match(lines.find((l) => l.includes('Bad Steer'))!, /^--\s+Bad Steer\s+STOCK ISSUE$/);
+  });
+
   it('counts drags over live runs, not entered runs', () => {
     // A scratch does not stir up the ground. Counting it would put the tractor
     // out early and every later drag in the wrong place.

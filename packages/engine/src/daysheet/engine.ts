@@ -40,6 +40,7 @@ export type RunFlag =
   | 'no_show'
   | 'reride_pending'
   | 'medical_release'
+  | 'vet_release'
   | 'slack';
 
 /** One contestant's scheduled run, as it appears on the sheet. */
@@ -61,6 +62,12 @@ export interface DaySheetRun {
   /** True when nothing should be waited for at the gate. */
   is_scratched: boolean;
   notes: string | null;
+  /**
+   * The release reason stored on the entry, if any. A release with no flag of
+   * its own (stock issue, weather) still prints its reason, so the gate man
+   * never reads a scratched run with a blank note.
+   */
+  release_type: string | null;
 }
 
 /** A drag inserted into the run order. */
@@ -79,6 +86,9 @@ export interface DaySheetSection {
   go_round: number;
   runs: DaySheetRun[];
   drags: DragMark[];
+  /** The drag interval the marks were counted with, so a copy can recount them. */
+  drag_every: number | null;
+  condensed_drag: boolean;
   /** Runs that will actually happen — scratches excluded. */
   live_count: number;
   entered_count: number;
@@ -174,7 +184,9 @@ export interface DaySheetInput {
   go_rounds?: number[];
 }
 
-const SCRATCHED_STATUSES = new Set(['scratched', 'turned_out', 'no_show']);
+// A release means he is not running: classifyTurnout stores 'medical_release'
+// for every excused reason (medical, vet_release, stock_issue, weather).
+const SCRATCHED_STATUSES = new Set(['scratched', 'turned_out', 'no_show', 'medical_release']);
 
 function flagsFor(entry: DaySheetEntry, performanceType: string): RunFlag[] {
   const flags: RunFlag[] = [];
@@ -183,6 +195,7 @@ function flagsFor(entry: DaySheetEntry, performanceType: string): RunFlag[] {
   if (entry.status === 'no_show') flags.push('no_show');
   if (entry.reride_pending) flags.push('reride_pending');
   if (entry.release_type === 'medical') flags.push('medical_release');
+  if (entry.release_type === 'vet_release') flags.push('vet_release');
   if (performanceType === 'slack') flags.push('slack');
   return flags;
 }
@@ -194,6 +207,18 @@ function flagsFor(entry: DaySheetEntry, performanceType: string): RunFlag[] {
  * ground, so counting it towards a drag would put the tractor out early and
  * every subsequent drag in the wrong place.
  */
+const OUT_FLAGS: RunFlag[] = ['turned_out', 'scratched', 'no_show', 'medical_release', 'vet_release'];
+
+/**
+ * The stored release reason, for a scratched run that has no flag saying why
+ * (a stock issue or weather release). Empty when a flag already says it.
+ */
+export function releaseNote(run: Pick<DaySheetRun, 'is_scratched' | 'flags' | 'release_type'>): string {
+  if (!run.is_scratched || !run.release_type) return '';
+  if (run.flags.some((f) => OUT_FLAGS.includes(f))) return '';
+  return run.release_type.replace(/_/g, ' ').toUpperCase();
+}
+
 export function dragMarks(
   liveRunCount: number,
   every: number | null | undefined,
@@ -280,12 +305,14 @@ export function buildDaySheet(input: DaySheetInput): DaySheet {
           flags: flagsFor(e, input.performance.type),
           is_scratched: scratched,
           notes: e.notes ?? null,
+          release_type: e.release_type ?? null,
         };
       });
 
       const live = runs.filter((r) => !r.is_scratched).length;
       const dragEvery =
         input.performance.arena_dragged_after ?? event.drag_every ?? null;
+      const condensed = input.performance.condensed_drag ?? event.condensed_drag ?? false;
 
       sections.push({
         rodeo_event_id: event.rodeo_event_id,
@@ -295,11 +322,9 @@ export function buildDaySheet(input: DaySheetInput): DaySheet {
         is_roughstock: event.is_roughstock,
         go_round: round,
         runs,
-        drags: dragMarks(
-          live,
-          dragEvery,
-          input.performance.condensed_drag ?? event.condensed_drag ?? false,
-        ),
+        drags: dragMarks(live, dragEvery, condensed),
+        drag_every: dragEvery,
+        condensed_drag: condensed,
         live_count: live,
         entered_count: runs.length,
       });
@@ -381,6 +406,7 @@ export function renderDaySheetText(sheet: DaySheet, width = 96): string {
         : run.horse_name ?? '';
       const notes = [
         ...run.flags.map((f) => f.replace(/_/g, ' ').toUpperCase()),
+        releaseNote(run),
         run.notes ?? '',
       ]
         .filter(Boolean)
