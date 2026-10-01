@@ -334,6 +334,71 @@ export function renderEnvelopeText(rodeoName, eventLabel, env, note) {
   return out.join('\n');
 }
 
+/**
+ * One slip per contestant, for the envelope she hands him.
+ *
+ * Grouped by person, not by line: a go-round and the average are both on his
+ * slip, with his total. The slips are built from the envelope lines, so their
+ * totals add up to the envelope total by construction.
+ */
+export function slips(env) {
+  const byPerson = new Map();
+  for (const l of env.lines) {
+    const slip = byPerson.get(l.contestant_id)
+      ?? { contestant_id: l.contestant_id, name: l.name, lines: [], total_cents: 0 };
+    slip.lines.push(l);
+    slip.total_cents += l.amount_cents;
+    byPerson.set(l.contestant_id, slip);
+  }
+  return [...byPerson.values()];
+}
+
+const ordinal = (n) => {
+  const t = n % 100;
+  if (t >= 11 && t <= 13) return `${n}th`;
+  return `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 10] ?? 'th'}`;
+};
+
+/**
+ * The slips, fixed width, one after another with a line to tear on.
+ *
+ * `paidCash`: Paid in cash succeeded on the server from this screen, so the
+ * slip says cash — that is the action she took, not something read off a
+ * row. `onServer`: the event is paid on the server some other way, so the
+ * slip names no method. Neither: it was recorded on this laptop, or not paid
+ * yet, and the slip says it is not on the server.
+ */
+export function renderSlipsText(rodeoName, eventLabel, people, { paidCash = false, onServer = false } = {}) {
+  const W = 40;
+  const out = [];
+  for (const slip of people) {
+    out.push('='.repeat(W));
+    out.push(rodeoName);
+    out.push(eventLabel);
+    out.push('');
+    out.push(slip.name);
+    for (const l of slip.lines) {
+      const what = [
+        l.place ? ordinal(l.place) : null,
+        l.type.replace(/_/g, ' '),
+        l.go_round ? `R${l.go_round}` : null,
+      ].filter(Boolean).join(' ');
+      out.push(`  ${pad(what, W - 15)} ${padL(dollars(l.amount_cents), 11)}`);
+    }
+    out.push(`  ${pad('', W - 15)} ${padL('-'.repeat(9), 11)}`);
+    out.push(`  ${pad('IN THIS ENVELOPE', W - 15)} ${padL(dollars(slip.total_cents), 11)}`);
+    out.push('');
+    if (paidCash) out.push('Paid in CASH.');
+    else if (!onServer) {
+      out.push('NOT ON THE SERVER until sync');
+      out.push('accepts the cash.');
+    }
+    out.push('- - - - - - - cut here - - - - - - - -');
+    out.push('');
+  }
+  return out.join('\n');
+}
+
 /** Whether an entry can still be turned out or traded. */
 export const isLive = (e) => LIVE.has(e.status);
 

@@ -462,5 +462,61 @@ await test('a turnout recorded offline is classified by the engine from the time
   for (const r of await offline.queued('r1')) await offline.resolveRejected(r.seq, 'drop');
 });
 
+await test('one slip per contestant: a two-place event prints two, and they add to the envelope total', async () => {
+  const pk = await offline.packet('r1');
+  apiDown();
+  // Two runs, two places paid.
+  await offline.enqueue('r1', { entity_type: 'score', data: { ...body(entries[0], 8.4, 8.4), rodeo_event_id: 'ev1' } });
+  await offline.enqueue('r1', { entity_type: 'score', data: { ...body(entries[1], 9.25, 9.25), rodeo_event_id: 'ev1' } });
+  const state = night.nightState(pk, await offline.queued('r1'));
+  const figured = night.eventPayout(state, 'ev1');
+  assert.ok(figured.ok, figured.reason);
+  const env = night.envelopes(state, figured.result);
+
+  const people = night.slips(env);
+  assert.equal(people.length, 2, 'two places, two slips');
+  assert.equal(people.reduce((s, p) => s + p.total_cents, 0), env.total_cents,
+    'the slips add up to the envelope total');
+
+  // Recorded on this laptop only: no method, and it says so.
+  const offlineText = night.renderSlipsText('Desk Jackpot', 'Breakaway', people);
+  assert.equal(offlineText.match(/cut here/g).length, 2);
+  assert.match(offlineText, /Casey Roper[\s\S]*1st prize[\s\S]*IN THIS ENVELOPE/);
+  assert.match(offlineText, /NOT ON THE SERVER until sync\naccepts the cash\./);
+  assert.doesNotMatch(offlineText, /held/i, 'nothing held, so no held line');
+  assert.doesNotMatch(offlineText, /CASH|check/, 'no method before the server has the cash');
+
+  // Paid in cash from this screen: the slip says cash, and nothing else changes.
+  const paidText = night.renderSlipsText('Desk Jackpot', 'Breakaway', people, { paidCash: true, onServer: true });
+  assert.equal(paidText.match(/Paid in CASH\./g).length, 2);
+  assert.doesNotMatch(paidText, /NOT ON THE SERVER|held|check/i);
+
+  // Paid on the server some other way: no method named, no offline warning.
+  const otherText = night.renderSlipsText('Desk Jackpot', 'Breakaway', people, { onServer: true });
+  assert.doesNotMatch(otherText, /CASH|NOT ON THE SERVER/);
+  for (const r of await offline.queued('r1')) await offline.resolveRejected(r.seq, 'drop');
+});
+
+await test('a go-round and an average are both on his one slip, with his total', async () => {
+  const env = {
+    lines: [
+      { contestant_id: 'c1', name: 'Casey Roper', place: 1, type: 'go_round', go_round: 1, amount_cents: 30000 },
+      { contestant_id: 'c2', name: 'Dale Heeler', place: 2, type: 'go_round', go_round: 1, amount_cents: 20000 },
+      { contestant_id: 'c1', name: 'Casey Roper', place: 1, type: 'average', go_round: null, amount_cents: 12345 },
+    ],
+    total_cents: 62345,
+  };
+  const people = night.slips(env);
+  assert.equal(people.length, 2);
+  const casey = people.find((p) => p.contestant_id === 'c1');
+  assert.equal(casey.lines.length, 2);
+  assert.equal(casey.total_cents, 42345);
+  const text = night.renderSlipsText('Desk Jackpot', 'Tie-Down', people);
+  const caseySlip = text.split('cut here')[0];
+  assert.match(caseySlip, /1st go round R1\s+\$300\.00/);
+  assert.match(caseySlip, /1st average\s+\$123\.45/);
+  assert.match(caseySlip, /IN THIS ENVELOPE\s+\$423\.45/);
+});
+
 console.log(bad === 0 ? '\n✓ the offline desk holds' : `\n✗ ${bad} offline check(s) wrong`);
 process.exit(bad ? 1 : 0);

@@ -16,9 +16,14 @@
 
 import { api } from '../api.js';
 import * as offline from '../offline.js';
-import { envelopes, eventBlockers, eventPayout, nightState, renderEnvelopeText } from '../night.js';
+import {
+  envelopes, eventBlockers, eventPayout, nightState, renderEnvelopeText, renderSlipsText, slips,
+} from '../night.js';
 import { crumbs, h, money, render, showPrint, toast } from '../ui.js';
 import { deskPanel, loadNight, notOnServer } from './desk.js';
+
+/** Events whose envelopes were paid in cash on the server from this screen. */
+const paidCashHere = new Set();
 
 /** Open fixed-width text in a window of its own — what a cheap arena printer handles best. */
 function printText(text) {
@@ -96,6 +101,13 @@ export async function payoutsView(rodeoId) {
           onclick: () => printText(renderEnvelopeText(rodeo.name, label, env,
             night.source === 'copy' ? 'Figured on the offline desk; the server recalculates when the link is back.' : null)),
         }, 'Print payoff list'),
+        h('button', {
+          class: 'ghost',
+          onclick: () => printText(renderSlipsText(rodeo.name, label, slips(env), {
+            paidCash: paidCashHere.has(ev.id),
+            onServer: paid?.on_server === true,
+          })),
+        }, 'Print slips'),
         paid
           ? null
           : h('button', {
@@ -116,6 +128,7 @@ export async function payoutsView(rodeoId) {
                       label: `Cash envelopes — ${label}, ${money(env.total_cents)}`,
                     },
                   });
+                  if (out.where === 'server') paidCashHere.add(ev.id);
                   toast(out.where === 'server'
                     ? `Paid. ${money(out.result.total_cents)} settled as cash on the ledger.`
                     : `Envelopes recorded ON THIS LAPTOP ONLY — the server recalculates and settles when the link is back.`,
