@@ -2,6 +2,49 @@
 
 Date: **8 August 2026**
 
+> **Read this first — updated 1 October 2026, branch `claude/quirky-galileo-lixvuz`.**
+> Everything below this note is the audit **as it was on 8 August 2026**, left
+> unchanged so it stays a record of that day. Its tables, test counts and
+> "Still missing" list describe the repo on that date, not now. The August test
+> counts are August counts; no new count is claimed here.
+>
+> **As of this branch**, each line naming the file that proves it:
+>
+> - **Entry and draw endpoints — built.** Entry quote, take an entry,
+>   turnout and trade in `apps/api/src/modules/entries/routes.ts`; draw, stock
+>   draw and re-draw in `apps/api/src/modules/draw/routes.ts`.
+> - **Sidepot routes — built.** List, create, update and calculate in
+>   `apps/api/src/modules/desk/routes.ts`, backed by
+>   `apps/api/src/core/database/desk-repo.ts`; the payouts screen calls them
+>   (`apps/web/public/js/views/payouts.js`).
+> - **Web app — built.** `apps/web`, no bundler, no build step. The offline
+>   packet, the IndexedDB queue and the hand-written service worker are
+>   `apps/web/public/js/offline.js` and `apps/web/public/sw.js`; the engine is
+>   served to the browser by `apps/web/server.ts`.
+> - **Results writer — built.** Make official runs `finalizeEvent` in
+>   `apps/api/src/core/desk-actions.ts`, which writes `results` through
+>   `writeResults` in `apps/api/src/core/database/entries-repo.ts`.
+> - **D47 — fixed.** A `medical_release` entry is not a live run on the day
+>   sheet, online and offline: `packages/engine/src/daysheet/engine.ts`,
+>   `apps/web/public/js/night.js`, recorded in `docs/SPEC-DELTAS.md`.
+> - **The secretary can pay the winner envelopes in cash.** `payout.disburse`
+>   includes `secretary` in `apps/api/src/core/auth.ts` — the existing
+>   permission, not a new one.
+> - **Stripe Connect — still not started.** No processor in
+>   `apps/api/package.json`; card rows still sit `pending`
+>   (`apps/api/src/core/settlement.ts`).
+> - **Auth hook — still not written.** No migration in `supabase/migrations/`
+>   writes `org_memberships` into the token; the secretary interface still
+>   takes a pasted token (`apps/web/public/js/app.js`).
+> - **Timer Bridge — still not started.** `timer_bridge` exists only as a
+>   score source and an authority rank (`apps/api/src/core/sync.ts`).
+> - **Tournament advancement — still by hand.** No tournament or advancement
+>   code in `packages/engine/src` or `apps/api/src`.
+>
+> The open rule questions in `RULES.md` — the crossfire standard, tie-on
+> thresholds, the jerk-down consequence and the unverified CPRA and
+> USTRC/WSTR ladders — are still open.
+
 Not a code review. Four real rodeos, modelled with their real formats and real
 money, run end to end through the engine and the database. Where something
 broke it is written down here; where a format cannot be expressed it says so.
