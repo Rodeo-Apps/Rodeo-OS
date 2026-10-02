@@ -2,6 +2,40 @@
 
 Follows Appendix C of the architecture, adjusted for what is already done.
 
+> **Read this first — updated 2 October 2026, branch `claude/quirky-galileo-lixvuz`.**
+> Every section below this note is the roadmap **as it was written**, left
+> unchanged as the record — including "Still to wire" and Phase 3, which are
+> out of date on this branch. Do not rebuild from them without checking this
+> list first. No test count is claimed here.
+>
+> **As of this branch**, each line naming the file that proves it:
+>
+> - **Results writer — built.** Make official runs `finalizeEvent` in
+>   `apps/api/src/core/desk-actions.ts`, which writes `results` through
+>   `writeResults` in `apps/api/src/core/database/entries-repo.ts`. ("Still to
+>   wire" item 3 is done.)
+> - **Offline app — built, without Dexie.** Plain IndexedDB packet and queue in
+>   `apps/web/public/js/offline.js`, a hand-written service worker in
+>   `apps/web/public/sw.js`, and the engine served type-stripped by
+>   `apps/web/server.ts`. No bundler, no dependency.
+> - **Sync queue against the authority model — built.** Each change is applied
+>   on its own through `apps/api/src/modules/sync/routes.ts`,
+>   `apps/api/src/core/sync.ts` and `apps/api/src/core/desk-actions.ts`.
+> - **The secretary can pay the winner envelopes in cash.** `payout.disburse`
+>   includes `secretary` in `apps/api/src/core/auth.ts`.
+> - **D47 — fixed.** A `medical_release` entry is not a live run on the day
+>   sheet: `packages/engine/src/daysheet/engine.ts`,
+>   `apps/web/public/js/night.js`, recorded in `docs/SPEC-DELTAS.md`.
+> - **Spectator SSE — already existed** before this branch:
+>   `GET /rodeos/:rodeo_id/live` in `apps/api/src/modules/public/routes.ts`.
+> - **Still not started or not written:** Stripe Connect (no processor in
+>   `apps/api/package.json`); the Supabase custom-access-token hook (no
+>   migration in `supabase/migrations/` writes `org_memberships`; the interface
+>   still takes a pasted token in `apps/web/public/js/app.js`); the Timer
+>   Bridge (`timer_bridge` is only a score source in `apps/api/src/core/sync.ts`);
+>   the WebSocket to arena terminals; notice delivery (nothing drains the
+>   outbox); tournament advancement.
+
 ---
 
 ## Done
