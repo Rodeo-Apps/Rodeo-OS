@@ -260,6 +260,8 @@ sanctioning body has to make — no amount of testing settles them.
 
 ## What I would tell a producer today
 
+> **Since then (see the 1 October 2026 note at the top):** entries and draws exist on this branch, and money moves for cash only. What follows is the 8 August answer, unchanged.
+
 The **money is trustworthy**. Scoring, ranking, ties, ground money, handicap
 divisions, team roping, D-format and multi-round averages are correct against
 real formats and real published figures, and the reconciliation guarantee holds

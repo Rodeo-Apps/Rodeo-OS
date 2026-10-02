@@ -189,7 +189,7 @@ triggers bind the service role too. Full reasoning in
 | Year-end | Complete — earnings by person against the threshold in force. Files nothing, by design |
 | Secretary interface | **Runs a rodeo end to end** — setup, entries, draw, day sheet, scoring, payouts, books, sanctioning, releases, grounds, year-end |
 | Supabase Auth in the UI | Not wired — token pasted in Settings |
-| Offline PWA | Not started |
+| Offline PWA | Built on this branch — rodeo packet and queue in IndexedDB (`apps/web/public/js/offline.js`), hand-written service worker (`apps/web/public/sw.js`), engine served to the browser by `apps/web/server.ts` |
 | Timer Bridge | Not started |
 
 Every request opens a transaction carrying the caller's verified JWT claims and

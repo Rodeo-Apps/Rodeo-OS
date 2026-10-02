@@ -90,6 +90,10 @@ export function deskPanel(rodeoId, { source, onChange } = {}) {
     box.replaceChildren(
       h('div', { class: 'small' }, h('strong', {}, `This browser: ${desk}`),
         h('span', { class: 'muted' }, '  — its own packet and its own queue.')),
+      // Tabs share one IndexedDB, so they share one desk. Said here so a
+      // second tab is not mistaken for the other secretary.
+      h('div', { class: 'muted small' },
+        'Two tabs of this browser are one desk, not two. The other secretary is a different browser or laptop.'),
       packetLine,
       failedLine,
       waiting.length
